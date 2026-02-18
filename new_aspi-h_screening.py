@@ -1,3 +1,11 @@
+import numpy as np
+import pandas as pd
+import math
+import os
+import shutil
+import glob
+import subprocess
+
 import ase
 from ase.io import read, write
 from ase.optimize import LBFGS, FIRE
@@ -6,16 +14,12 @@ from ase.constraints import FixAtoms
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdGeometry, Draw
 
+from Bio.PDB import PDBParser, PDBIO, Atom
+
+from scipy.spatial.transform import Rotation as R
+
 import warnings
 warnings.simplefilter("ignore")
-
-import numpy as np
-import pandas as pd
-import math
-import os
-import shutil
-import glob
-import subprocess
 
 from mace.calculators import mace_off
 nnp_calc = mace_off(model="small", device='cpu')
@@ -125,7 +129,7 @@ class ConformationAnalyzer:
 		df = df.sort_values(by='boltzmann', ascending=False)
 		df.to_csv(self.output_file, sep=' ', index=False)
 
-class GAFF2param:
+class GAFF2Param:
 	def __init__(self, polymer, chain_length):
 		self.polymer = polymer
 		self.chain_length = chain_length
@@ -238,6 +242,39 @@ class GAFF2param:
 		self.create_polymer_chain()
 		with open(output_2, 'a') as f:
 			print(f"\tcreate_polymer_chain", file=f)
+
+class BulkCreator:
+    def __init_(self, polymer, chain_length, num_chains)
+        self.polymer = polymer
+        self.chain_length = chain_length
+        self.num_chains = num_chains
+        self.box_size_x = 0
+        self.box_size_y = 0
+        self.box_size_z = 0
+        
+    def rotate_chain(self):
+        single_chain_pdb = f'{self.polymer}_n-{self.chain_length}.pdb'
+        parser = PDBparser(QUIET=True)
+        pdb_structure = parser.get_structure('original', single_chain_pdb)
+        single_chain = read(single_chain_pdb)
+        positions = single_chain.get_positions()
+        center_of_mass = np.mean(positions, axis=0)
+        single_chain.translate(-center_of_mass)
+        cov_matrix = np.cov(positions.T)
+        eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
+        longest_axis = eigenvectors[:, np.argmax(eigenvalues)]
+        z_axis = np.array([0, 0, 1])
+        rotation_axis = np.cross(longest_axis, z_axis)
+        rotation_angle = np.arccos(np.dot(longest_axis, z_axis) / (np.linalg.norm(longest_axis) * np.linalg.norm(z_axis)))
+        single_chain.rotate(v=rotation_axis, a=np.degress(rotation_angle), center='COM')
+        new_positions = single_chain.get_positions()
+        for i, atom in enumerate(pdb_structure)
+            atom.set_coord(new_positions[i])
+        self.rotated_single_chain = f'{self.polymer}_n-{self.chain_length}_rot.pdb'
+        io = PDBIO()
+        io.set_structure(pdb_structure)
+        io.save(self.rotated_single_chain)
+        
 
 # Create a working directory for polymer and copy polymer connectivity cards			
 polymer = 'a1'
