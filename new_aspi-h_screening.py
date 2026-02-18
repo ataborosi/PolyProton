@@ -6,6 +6,9 @@ from ase.constraints import FixAtoms
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdGeometry, Draw
 
+import warnings
+warnings.simplefilter("ignore")
+
 import numpy as np
 import pandas as pd
 import math
@@ -166,7 +169,7 @@ class GAFF2param:
 		atom_lines = mol2_lines[atom_start + 1:bond_start]
 		atom_data = [line.split() for line in atom_lines]
 		atom_df = pd.DataFrame(atom_data)
-		molden_chg_file = f'{self.polymer}.molden.chg'
+		molden_chg_file = f'{self.polymer}.chg'
 		molden_df = pd.read_csv(molden_chg_file, delim_whitespace=True, header=None)
 		atom_df[7] = self.polymer
 		atom_df[8] = molden_df[4].map('{:.4f}'.format)
