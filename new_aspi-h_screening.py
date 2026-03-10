@@ -244,42 +244,84 @@ class GAFF2Param:
 			print(f"\tcreate_polymer_chain", file=f)
 
 class BulkCreator:
-    def __init_(self, polymer, chain_length, num_chains)
-        self.polymer = polymer
-        self.chain_length = chain_length
-        self.num_chains = num_chains
-        self.box_size_x = 0
-        self.box_size_y = 0
-        self.box_size_z = 0
-        
-    def rotate_chain(self):
-        single_chain_pdb = f'{self.polymer}_n-{self.chain_length}.pdb'
-        parser = PDBparser(QUIET=True)
-        pdb_structure = parser.get_structure('original', single_chain_pdb)
-        single_chain = read(single_chain_pdb)
-        positions = single_chain.get_positions()
-        center_of_mass = np.mean(positions, axis=0)
-        single_chain.translate(-center_of_mass)
-        cov_matrix = np.cov(positions.T)
-        eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
-        longest_axis = eigenvectors[:, np.argmax(eigenvalues)]
-        z_axis = np.array([0, 0, 1])
-        rotation_axis = np.cross(longest_axis, z_axis)
-        rotation_angle = np.arccos(np.dot(longest_axis, z_axis) / (np.linalg.norm(longest_axis) * np.linalg.norm(z_axis)))
-        single_chain.rotate(v=rotation_axis, a=np.degress(rotation_angle), center='COM')
-        new_positions = single_chain.get_positions()
-        for i, atom in enumerate(pdb_structure)
-            atom.set_coord(new_positions[i])
-        self.rotated_single_chain = f'{self.polymer}_n-{self.chain_length}_rot.pdb'
-        io = PDBIO()
-        io.set_structure(pdb_structure)
-        io.save(self.rotated_single_chain)
-        
+	def __init__(self, polymer, chain_length, num_chains):
+		self.polymer = polymer
+		self.chain_length = chain_length
+		self.num_chains = num_chains
+		self.box_size_x = 0
+		self.box_size_y = 0
+		self.box_size_z = 0
+		
+	def rotate_chain(self):
+		single_chain_pdb = f'{self.polymer}_n-{self.chain_length}.pdb'
+		parser = PDBParser(QUIET=True)
+		pdb_structure = parser.get_structure('original', single_chain_pdb)
+		single_chain = read(single_chain_pdb)
+		positions = single_chain.get_positions()
+		center_of_mass = np.mean(positions, axis=0)
+		single_chain.translate(-center_of_mass)
+		cov_matrix = np.cov(positions.T)
+		eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
+		longest_axis = eigenvectors[:, np.argmax(eigenvalues)]
+		z_axis = np.array([0, 0, 1])
+		rotation_axis = np.cross(longest_axis, z_axis)
+		rotation_angle = np.arccos(np.dot(longest_axis, z_axis) / (np.linalg.norm(longest_axis) * np.linalg.norm(z_axis)))
+		single_chain.rotate(v=rotation_axis, a=np.degrees(rotation_angle), center='COM')
+		new_positions = single_chain.get_positions()
+		for i, atom in enumerate(pdb_structure.get_atoms()):
+			atom.set_coord(new_positions[i])
+		self.rotated_single_chain = f'{self.polymer}_n-{self.chain_length}_rot.pdb'
+		io = PDBIO()
+		io.set_structure(pdb_structure)
+		io.save(self.rotated_single_chain)
 
+	def box_dimension(self):
+		structure = read(self.rotated_single_chain)
+		positions = structure.get_positions()
+		min_coords = np.min(positions, axis=0)
+		max_coords = np.max(positions, axis=0)
+		dim_x, dim_y, dim_z = max_coords - min_coords
+		polymer_volume = dim_x * dim_y * dim_z
+		total_box_volume = polymer_volume * self.num_chains
+		box_height = dim_z + 30
+		box_side_area = total_box_volume / box_height
+		
+		scale_factor = 1.65 - 0.3 * np.log2(1 + (dim_x + dim_y) / 10)
+		scale_factor = max(0.5, min(1.5, scale_factor))
+
+		self.box_size_x = np.sqrt(box_side_area) * scale_factor
+		self.box_size_y = np.sqrt(box_side_area) * scale_factor
+		self.box_size_z = box_height
+
+	def packmol_generate_box(self):
+		with open("packmol_input.inp", "w") as f:
+			f.write(f"""
+			tolerance 2.0
+			filetype pdb
+			add_amber_ter
+			output {self.polymer}_n-{self.chain_length}x{self.num_chains}.pdb
+			structure {self.rotated_single_chain}
+			number {self.num_chains}
+			inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}
+			constrain_rotation x 0. 0.
+			constrain_rotation y 0. 0.
+			constrain_rotation z 0. 0.
+			end structure
+			""")
+	
+#		 subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True)
+		subprocess.run('packmol < packmol_input.inp', shell=True)
+	
+	def create_bulk_phase(self):
+		self.rotate_chain()
+		self.box_dimension()
+		self.packmol_generate_box()
+
+		
 # Create a working directory for polymer and copy polymer connectivity cards			
 polymer = 'a1'
 if not os.path.exists(polymer):
-    os.makedirs(polymer)
+	os.makedirs(polymer)
 polymer_cards = ['head', 'main', 'tail']
 for polymer_cards_i in polymer_cards:
 	shutil.copy(polymer_cards_i, f'{polymer}')
@@ -321,7 +363,13 @@ with open(output, 'a') as f:
 	print(f"\tEvaluation of conformers finished", file=f)
 
 # Creating GAFF2 parameters for the monomer unit and creating specfic chain length single polymer 
-param = GAFF2param(polymer, chain_length)
+param = GAFF2Param(polymer, chain_length)
 param.parameterization()
 with open(output, 'a') as f:
 	print(f"\tCreating GAFF2 parameters and single polymer chain creation finished", file=f)
+
+# Align the single polymer chain, define the box dimension based on the polymer chain, and create the bulk phase
+bulk_creator = BulkCreator(polymer, chain_length, num_chains)
+bulk_creator.create_bulk_phase()
+with open(output, 'a') as f:
+	print(f"\tAlignment of single polymer chain and bulk phase creation finished", file=f)
