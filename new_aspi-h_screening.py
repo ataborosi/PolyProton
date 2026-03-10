@@ -173,7 +173,8 @@ class GAFF2Param:
 		atom_lines = mol2_lines[atom_start + 1:bond_start]
 		atom_data = [line.split() for line in atom_lines]
 		atom_df = pd.DataFrame(atom_data)
-		molden_chg_file = f'{self.polymer}.chg'
+#		molden_chg_file = f'{self.polymer}.chg'
+		molden_chg_file = f'{self.polymer}.molden.chg'
 		molden_df = pd.read_csv(molden_chg_file, delim_whitespace=True, header=None)
 		atom_df[7] = self.polymer
 		atom_df[8] = molden_df[4].map('{:.4f}'.format)
@@ -309,14 +310,15 @@ class BulkCreator:
 			end structure
 			""")
 	
-#		 subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True)
-		subprocess.run('packmol < packmol_input.inp', shell=True)
+		subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True)
+#		subprocess.run('packmol < packmol_input.inp', shell=True)
 	
 	def create_bulk_phase(self):
 		self.rotate_chain()
 		self.box_dimension()
 		self.packmol_generate_box()
 
+#class AmberParams:
 		
 # Create a working directory for polymer and copy polymer connectivity cards			
 polymer = 'a1'
