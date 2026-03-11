@@ -318,7 +318,32 @@ class BulkCreator:
 		self.box_dimension()
 		self.packmol_generate_box()
 
-#class AmberParams:
+class AmberParams:
+	def __init__(self, polymer, chain_length, num_chains, bulk_creator: BulkCreator):
+		self.polymer = polymer
+		self.chain_length = chain_length
+		self.num_chains = num_chains
+		self.box_size_x = bulk_creator.box_size_x
+		self.box_size_y = bulk_creator.box_size_y
+		self.box_size_z = bulk_creator.box_size_z
+		self.pdb_file = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}.pdb"
+		
+	def create_amber_params(self):
+		with open('final_leap_input.in', 'w') as f:
+			f.write(f"""
+			source leaprc.gaff2
+			loadamberprep h.prepi
+			loadamberprep t.prepi
+			loadamberprep {self.polymer}_m.prepi
+			loadamberparams {self.polymer}_gaff2.frcmod
+			mol = loadpdb {self.pdb_file}
+			set mol box {{ {self.box_size_x} {self.box_size_y} {self.box_size_z} }}
+			savepdb mol {self.polymer}_n-{self.chain_length}x{self.num_chains}_amber.pdb
+			saveamberparm mol {self.polymer}_n-{self.chain_length}x{self.num_chains}.prmtop {self.polymer}_n-{self.chain_length}x{self.num_chains}.inpcrd
+			quit
+			""")
+		
+		subprocess.run('tleap -f final_leap_input.in > final_leap_input.out', shell=True, check=True)
 		
 # Create a working directory for polymer and copy polymer connectivity cards			
 polymer = 'a1'
@@ -375,3 +400,7 @@ bulk_creator = BulkCreator(polymer, chain_length, num_chains)
 bulk_creator.create_bulk_phase()
 with open(output, 'a') as f:
 	print(f"\tAlignment of single polymer chain and bulk phase creation finished", file=f)
+    
+# Create amber parameters
+amber = AmberParams(polymer, chain_length, num_chains, bulk_creator = bulk_creator)
+amber.create_amber_params()
