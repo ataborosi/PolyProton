@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --gres=gpu:1								# Use gpu
+#SBATCH --ntasks=24									# Number of tasks (MPI processes)
+#SBATCH --cpus-per-task=1							# Number of CPU cores per task
+#SBATCH --mem=1G									# Memory per node (in MB)
+#SBATCH --time=9999:00:00							# Time limit (HH:MM:SS)
+
+cd $SLURM_SUBMIT_DIR
+
+#OPENMPI
+export "PATH=$PATH:/opt/openmpi/bin"
+export "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/openmpi/lib"
+
+#AMBER
+export AMBERHOME=$AMBERHOME:/opt/amber/amber24
+export PATH=$PATH:$AMBERHOME/bin
+source /opt/amber/amber24/amber.sh
+
+DIR1=`pwd`
+DIR2=$RANDOM
+UNAME=`whoami`
+
+#copy files into the local /home/Calculations/UNAME directory
+mkdir /home/Calculations/$UNAME/$DIR2
+cd $DIR1
+cp -r * /home/Calculations/$UNAME/$DIR2
+
+#using local Calculations folder
+cd /home/Calculations/$UNAME/$DIR2
+
+python3 new_aspi-h_screening.py
