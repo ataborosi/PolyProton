@@ -5,6 +5,7 @@ import os
 import shutil
 import glob
 import subprocess
+import getpass
 
 import ase
 from ase.io import read, write
@@ -27,7 +28,8 @@ from ase.calculators.orca import ORCA
 from ase.calculators.orca import OrcaProfile
 profile = OrcaProfile(command='/opt/orca/orca')
 
-output_2 = 'process-temp.txt'
+base_dir = os.getcwd()
+output = os.path.join(base_dir, 'new_aspi-h_process.txt')
 
 class MonomerBuilder:
 	def __init__(self, polymer, backbone_smiles, sidechain_smiles, benzene_smiles, conf_num):
@@ -130,9 +132,10 @@ class ConformationAnalyzer:
 		df.to_csv(self.output_file, sep=' ', index=False)
 
 class GAFF2Param:
-	def __init__(self, polymer, chain_length):
+	def __init__(self, polymer, chain_length, nproc):
 		self.polymer = polymer
 		self.chain_length = chain_length
+		self.nproc = nproc
 		
 	def orca_calculation(self, mol):
 		orca_calc = ORCA(
@@ -140,7 +143,7 @@ class GAFF2Param:
 			orcasimpleinput='wb97x-d4 def2-svp def2/j rijcosx tightscf',
 			charge=0,
 			mult=1,
-			orcablocks='%pal nprocs 6 end'
+			orcablocks=f'%pal nprocs {self.nproc} end'
 		)
 		mol.set_calculator(orca_calc)
 		mol.get_potential_energy()
@@ -223,26 +226,12 @@ class GAFF2Param:
 	def parameterization(self):
 		mol = read(f'{self.polymer}_0_opt.xyz')
 		mol_name = f'{self.polymer}_0_opt.xyz'
-		with open(output_2, 'a') as f:
-			print(f"parameterization started", file=f)
 		self.orca_calculation(mol)
-		with open(output_2, 'a') as f:
-			print(f"\torca_calculation done", file=f)
 		self.run_multiwfn()
-		with open(output_2, 'a') as f:
-			print(f"\trun_multiwfn", file=f)
 		self.convert_xyz_to_mol2(mol_name)
-		with open(output_2, 'a') as f:
-			print(f"\tconvert_xyz_to_mol2", file=f)
 		self.modify_mol2_file()
-		with open(output_2, 'a') as f:
-			print(f"\tmodify_mol2_file", file=f)
 		self.run_antechamber()
-		with open(output_2, 'a') as f:
-			print(f"\trun_antechamber", file=f)
 		self.create_polymer_chain()
-		with open(output_2, 'a') as f:
-			print(f"\tcreate_polymer_chain", file=f)
 
 class BulkCreator:
 	def __init__(self, polymer, chain_length, num_chains):
@@ -342,17 +331,87 @@ class AmberParams:
 			saveamberparm mol {self.polymer}_n-{self.chain_length}x{self.num_chains}.prmtop {self.polymer}_n-{self.chain_length}x{self.num_chains}.inpcrd
 			quit
 			""")
-		
+	
+		self.prmtop = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}.prmtop"
+		self.inpcrd = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}.inpcrd"
+	
 		subprocess.run('tleap -f final_leap_input.in > final_leap_input.out', shell=True, check=True)
+
+class Dry_MDSimulation():
+	def __init__(self, nproc, output, amber_params: AmberParams):
+		self.prmtop = amber_params.prmtop
+		self.inpcrd = amber_params.inpcrd
+		self.nproc = nproc
+		self.dir1 = os.getcwd()
+		self.uname = getpass.getuser()
+		self.output = output
+		self.nproc = nproc
+
+	def run_simulation(self, step_name, input_file, output_file, restart_in, restart_out, reference_file, additional_args=""):
+		with open(self.output, 'a') as f:
+			print(f"\t\tStarted {step_name} step", file=f)
+
+		temp_dir = subprocess.check_output(['mktemp', '-d', f'/home/Calculations/{self.uname}/XXXXXX']).decode().strip()
+		folder_name = f"{step_name}"
+		os.makedirs(folder_name, exist_ok=True)
 		
-# Create a working directory for polymer and copy polymer connectivity cards			
+		files_to_copy = [input_file, self.prmtop, restart_in]
+		for file in files_to_copy:
+			if os.path.exists(file):
+				shutil.copy(file, folder_name)
+			else:
+				raise FileNotFoundError(f"{file} not found")
+
+		os.chdir(folder_name)
+		subprocess.run(f"cp * {temp_dir}", shell=True, check=True)
+		os.chdir(temp_dir)
+
+		if any(x in step_name for x in ["min", "npt"]):
+			cmd = f"mpirun -np {nproc} pmemd.MPI -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args}"
+		else:
+			cmd = f"pmemd.cuda -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args} -AllowSmallBox"
+
+		result = subprocess.run(cmd, shell=True)
+		if result.returncode != 0:
+			raise RuntimeError(f"{step_name} step failed")
+
+		subprocess.run(f"cp * {self.dir1}", shell=True, check=True)
+		shutil.rmtree(temp_dir)
+		with open(self.output, 'a') as f:
+			print(f"\t\tFinished {step_name} step", file=f)
+		os.chdir(self.dir1)
+
+	def run_all_steps(self):
+		steps = [
+			("dry-eq_min", "dry-eq_0-min.in", "dry-eq_0-min.out", f"{self.inpcrd}", "dry-eq_0-min.ncrst", f"{self.inpcrd}"),
+			("dry-eq_1-nvt", "dry-eq_1-nvt.in", "dry-eq_1-nvt.out", "dry-eq_0-min.ncrst", "dry-eq_1-nvt.ncrst", "dry-eq_0-min.ncrst", "-x dry-eq_1-nvt.nc"),
+			("dry-eq_2-npt", "dry-eq_2-npt.in", "dry-eq_2-npt.out", "dry-eq_1-nvt.ncrst", "dry-eq_2-npt.ncrst", "dry-eq_1-nvt.ncrst", "-x dry-eq_2-npt.nc"),
+			("dry-eq_3-nvt", "dry-eq_3-nvt.in", "dry-eq_3-nvt.out", "dry-eq_2-npt.ncrst", "dry-eq_3-nvt.ncrst", "dry-eq_2-npt.ncrst", "-x dry-eq_3-nvt.nc"),
+			("dry-eq_4-npt", "dry-eq_4-npt.in", "dry-eq_4-npt.out", "dry-eq_3-nvt.ncrst", "dry-eq_4-npt.ncrst", "dry-eq_3-nvt.ncrst", "-x dry-eq_4-npt.nc"),
+			("dry-eq_5-nvt", "dry-eq_5-nvt.in", "dry-eq_5-nvt.out", "dry-eq_4-npt.ncrst", "dry-eq_5-nvt.ncrst", "dry-eq_4-npt.ncrst", "-x dry-eq_5-nvt.nc"),
+			("dry-eq_6-npt", "dry-eq_6-npt.in", "dry-eq_6-npt.out", "dry-eq_5-nvt.ncrst", "dry-eq_6-npt.ncrst", "dry-eq_5-nvt.ncrst", "-x dry-eq_6-npt.nc"),
+			("dry-eq_7-nvt-pr", "dry-eq_7-nvt-pr.in", "dry-eq_7-nvt-pr.out", "dry-eq_6-npt.ncrst", "dry-eq_7-nvt-pr.ncrst", "dry-eq_6-npt.ncrst", "-x dry-eq_7-nvt-pr.nc"),
+		]
+
+		for step in steps:
+			self.run_simulation(*step)
+		
+# Create a working directory for polymer with subfolders and copy polymer connectivity cards			
 polymer = 'a1'
-if not os.path.exists(polymer):
-	os.makedirs(polymer)
-polymer_cards = ['head', 'main', 'tail']
-for polymer_cards_i in polymer_cards:
-	shutil.copy(polymer_cards_i, f'{polymer}')
-os.chdir(polymer)
+base_dir = os.getcwd()
+polymer_dir = os.path.join(base_dir, polymer)
+init_dir = os.path.join(polymer_dir, "init")
+dry_eq_dir = os.path.join(polymer_dir, "dry-eq")
+input_dir = os.path.join(base_dir, "input_files")
+
+os.makedirs(polymer_dir, exist_ok=True)
+os.makedirs(init_dir, exist_ok=True)
+os.makedirs(dry_eq_dir, exist_ok=True)
+
+for cards in ["head", "main", "tail"]:
+	shutil.copy(os.path.join(input_dir, cards), init_dir)
+
+os.chdir(init_dir)
 
 # Details of polymer
 backbone_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
@@ -363,8 +422,7 @@ conf_output_file = f"{polymer}_conf.txt"
 temperature = 300
 chain_length = 15
 num_chains = 20
-
-output = 'test.txt'
+nproc = 24
 
 with open(output, 'a') as f:
 	print(f"Processing polymer: {polymer} with backbone: {backbone_smiles}", file=f)
@@ -390,17 +448,48 @@ with open(output, 'a') as f:
 	print(f"\tEvaluation of conformers finished", file=f)
 
 # Creating GAFF2 parameters for the monomer unit and creating specfic chain length single polymer 
-param = GAFF2Param(polymer, chain_length)
+param = GAFF2Param(polymer, chain_length, nproc)
 param.parameterization()
 with open(output, 'a') as f:
-	print(f"\tCreating GAFF2 parameters and single polymer chain creation finished", file=f)
+	print(f"\tGAFF2 parameters and single polymer chain creation finished", file=f)
 
 # Align the single polymer chain, define the box dimension based on the polymer chain, and create the bulk phase
 bulk_creator = BulkCreator(polymer, chain_length, num_chains)
 bulk_creator.create_bulk_phase()
 with open(output, 'a') as f:
 	print(f"\tAlignment of single polymer chain and bulk phase creation finished", file=f)
-    
+	
 # Create amber parameters
 amber = AmberParams(polymer, chain_length, num_chains, bulk_creator = bulk_creator)
 amber.create_amber_params()
+with open(output, 'a') as f:
+	print(f"\tAmber parameters are created for the bulk phase", file=f)
+
+# Create a working directory for dry equilibration simulations and copy necessary files	
+os.chdir(dry_eq_dir)
+
+for params in [
+	f"{polymer}_n-{chain_length}x{num_chains}.prmtop",
+	f"{polymer}_n-{chain_length}x{num_chains}.inpcrd",
+]:
+	shutil.copy(os.path.join(init_dir, params), dry_eq_dir)
+
+for inputs in [
+	"dry-eq_0-min.in",
+	"dry-eq_1-nvt.in",
+	"dry-eq_2-npt.in",
+	"dry-eq_3-nvt.in",
+	"dry-eq_4-npt.in",
+	"dry-eq_5-nvt.in",
+	"dry-eq_6-npt.in",
+	"dry-eq_7-nvt-pr.in",
+]:
+	shutil.copy(os.path.join(input_dir, inputs), dry_eq_dir)
+
+# Run the dry equilibration md simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
+with open(output, 'a') as f:
+	print(f"\tDry equilibration MD simulations started", file=f)
+dry_md = Dry_MDSimulation(nproc, output, amber_params=amber)
+dry_md.run_all_steps()
+with open(output, 'a') as f:
+	print(f"\tDry equilibration MD simulations finished", file=f)
