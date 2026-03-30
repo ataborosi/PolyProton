@@ -29,7 +29,7 @@ from ase.calculators.orca import OrcaProfile
 profile = OrcaProfile(command='/opt/orca/orca')
 
 base_dir = os.getcwd()
-output = os.path.join(base_dir, 'new_aspi-h_process.txt')
+output = os.path.join(base_dir, 'new_aspi-h_process_temp.txt')
 
 class MonomerBuilder:
 	def __init__(self, polymer, backbone_smiles, sidechain_smiles, benzene_smiles, conf_num):
@@ -113,7 +113,7 @@ class ConformationAnalyzer:
 	def analyze_conformers(self):
 		dfs = []
 		for conf_i in range(self.conf_num):
-			file_opt = f"{polymer}_{conf_i}_opt.txt"
+			file_opt = f"{self.polymer}_{conf_i}_opt.txt"
 			with open(file_opt) as f:
 				last_line = f.readlines()[-1]
 				columns = last_line.split()
@@ -219,7 +219,7 @@ class GAFF2Param:
 			f.write(f'loadamberparams {self.polymer}_gaff2.frcmod\n')
 			f.write(f'mol = sequence {formatted_sequence}\n')
 			f.write(f'savepdb mol {self.polymer}_n-{self.chain_length}.pdb\n')
-			f.write(f'saveamberparm mol {self.polymer}_n-15.prmtop {self.polymer}_n-{self.chain_length}.inpcrd\n')
+			f.write(f'saveamberparm mol {self.polymer}_n-{self.chain_length}.prmtop {self.polymer}_n-{self.chain_length}.inpcrd\n')
 			f.write('quit\n')
 		subprocess.run(f'tleap -f {leap_input_filename} > {leap_output_filename}', shell=True, check=True)
 	
@@ -327,15 +327,18 @@ class AmberParams:
 			loadamberparams {self.polymer}_gaff2.frcmod
 			mol = loadpdb {self.pdb_file}
 			set mol box {{ {self.box_size_x} {self.box_size_y} {self.box_size_z} }}
-			savepdb mol {self.polymer}_n-{self.chain_length}x{self.num_chains}_amber.pdb
+            set default nocenter on
 			saveamberparm mol {self.polymer}_n-{self.chain_length}x{self.num_chains}.prmtop {self.polymer}_n-{self.chain_length}x{self.num_chains}.inpcrd
 			quit
 			""")
 	
 		self.prmtop = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}.prmtop"
 		self.inpcrd = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}.inpcrd"
+        amber_pdb = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}_amber.pdb"
 	
 		subprocess.run('tleap -f final_leap_input.in > final_leap_input.out', shell=True, check=True)
+        ambpdb_command = f"ambpdb -p {self.prmtop} -c {self.inpcrd} > {amber_pdb}"
+		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 class Dry_MDSimulation():
 	def __init__(self, nproc, output, amber_params: AmberParams):
@@ -367,7 +370,7 @@ class Dry_MDSimulation():
 		os.chdir(temp_dir)
 
 		if any(x in step_name for x in ["min", "npt"]):
-			cmd = f"mpirun -np {nproc} pmemd.MPI -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args}"
+			cmd = f"mpirun -np {self.nproc} pmemd.MPI -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args}"
 		else:
 			cmd = f"pmemd.cuda -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args} -AllowSmallBox"
 
@@ -377,6 +380,7 @@ class Dry_MDSimulation():
 
 		subprocess.run(f"cp * {self.dir1}", shell=True, check=True)
 		shutil.rmtree(temp_dir)
+		shutil.rmtree(folder_name)
 		with open(self.output, 'a') as f:
 			print(f"\t\tFinished {step_name} step", file=f)
 		os.chdir(self.dir1)
@@ -395,8 +399,26 @@ class Dry_MDSimulation():
 
 		for step in steps:
 			self.run_simulation(*step)
-	
-    
+
+class Analysis():
+	def merge_nc_files(self, prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file):
+		ambpdb_command = f"ambpdb -p {prmtop_file} -c {ncrst_file} > {pdb_file}"
+		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		
+		with open(cpptraj_file, 'w') as file:
+			for nc_file in nc_files:			
+				file.write(f"trajin {nc_file} 1 100 10\n")
+			file.write(f"trajout {prefix} pdb multi\n")
+		
+		cpptraj_command = f"cpptraj -i {cpptraj_file} -p {prmtop_file}"
+		subprocess.run(cpptraj_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		
+		merge_command = f"ls -v {prefix}* | xargs cat > {merged_pdb}"
+		subprocess.run(merge_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		
+		for file in os.listdir():
+			if file.startswith(prefix):
+				os.remove(file)			
 	
 # Create a working directory for polymer with subfolders and copy polymer connectivity cards			
 polymer = 'a1'
@@ -417,7 +439,7 @@ for cards in ["head", "main", "tail"]:
 
 os.chdir(init_dir)
 
-# Details of polymer
+ Details of polymer
 backbone_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
 sidechain_smiles="OCCCS(O)(=O)=O"
 benzene_smiles="C1=CC=CC=C1"
@@ -470,7 +492,7 @@ with open(output, 'a') as f:
 	print(f"\tAmber parameters are created for the bulk phase", file=f)
 
 # Create a working directory for dry equilibration simulations and copy necessary files	
-os.chdir(dry_eq_dir)
+s.chdir(dry_eq_dir)
 
 for params in [
 	f"{polymer}_n-{chain_length}x{num_chains}.prmtop",
@@ -499,14 +521,25 @@ with open(output, 'a') as f:
 	print(f"\tDry equilibration MD simulations finished", file=f)
 
 # Perform trajectory files merging and conversion
-nc_files = [f"{polymer}_n-{chain_length}x{num_chains}_1-nvt.nc",
-    f"{polymer}_n-{chain_length}x{num_chains}_2-npt.nc",
-    f"{polymer}_n-{chain_length}x{num_chains}_3-nvt.nc", 
-    f"{polymer}_n-{chain_length}x{num_chains}_4-npt.nc",
-    f"{polymer}_n-{chain_length}x{num_chains}_5-nvt.nc",
-    f"{polymer}_n-{chain_length}x{num_chains}_6-npt.nc",
-    f"{polymer}_n-{chain_length}x{num_chains}_7-nvt-pr.nc",
-    ]
+nc_files = [f"dry-eq_1-nvt.nc",
+	f"dry-eq_2-npt.nc",
+	f"dry-eq_3-nvt.nc", 
+	f"dry-eq_4-npt.nc",
+	f"dry-eq_5-nvt.nc",
+	f"dry-eq_6-npt.nc",
+	f"dry-eq_7-nvt-pr.nc",
+	]
+prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}.prmtop"
+ncrst_file = f"dry-eq_7-nvt-pr.ncrst"
+pdb_file = f"dry-eq_last.pdb"
+merged_pdb=f"dry-eq.pdb"
+cpptraj_file="cpptraj.in"
+prefix=f"dry-eq_tmp"
+dry_md_analysis = Analysis()
+dry_md_analysis.merge_nc_files(prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file)
+
+with open(output, 'a') as f:
+	print(f"\tDry equilibration trajectory merging finished", file=f)
 
 # Create working directory for hydrate equilibration and copy necessary files
 os.chdir(hyd_eq_dir)
@@ -514,7 +547,7 @@ os.chdir(hyd_eq_dir)
 for params in [
 	f"h.prepi",
 	f"t.prepi",
-    f"{polymer}_m.prepi"
-    f"{polymer}_gaff2.frcmod"
+	f"{polymer}_m.prepi",
+	f"{polymer}_gaff2.frcmod",
 ]:
 	shutil.copy(os.path.join(init_dir, params), hyd_eq_dir)
