@@ -395,18 +395,22 @@ class Dry_MDSimulation():
 
 		for step in steps:
 			self.run_simulation(*step)
-		
+	
+    
+	
 # Create a working directory for polymer with subfolders and copy polymer connectivity cards			
 polymer = 'a1'
 base_dir = os.getcwd()
 polymer_dir = os.path.join(base_dir, polymer)
 init_dir = os.path.join(polymer_dir, "init")
 dry_eq_dir = os.path.join(polymer_dir, "dry-eq")
+hyd_eq_dir = os.path.join(polymer_dir, "hyd-eq")
 input_dir = os.path.join(base_dir, "input_files")
 
 os.makedirs(polymer_dir, exist_ok=True)
 os.makedirs(init_dir, exist_ok=True)
 os.makedirs(dry_eq_dir, exist_ok=True)
+os.makedirs(hyd_eq_dir, exist_ok=True)
 
 for cards in ["head", "main", "tail"]:
 	shutil.copy(os.path.join(input_dir, cards), init_dir)
@@ -493,3 +497,24 @@ dry_md = Dry_MDSimulation(nproc, output, amber_params=amber)
 dry_md.run_all_steps()
 with open(output, 'a') as f:
 	print(f"\tDry equilibration MD simulations finished", file=f)
+
+# Perform trajectory files merging and conversion
+nc_files = [f"{polymer}_n-{chain_length}x{num_chains}_1-nvt.nc",
+    f"{polymer}_n-{chain_length}x{num_chains}_2-npt.nc",
+    f"{polymer}_n-{chain_length}x{num_chains}_3-nvt.nc", 
+    f"{polymer}_n-{chain_length}x{num_chains}_4-npt.nc",
+    f"{polymer}_n-{chain_length}x{num_chains}_5-nvt.nc",
+    f"{polymer}_n-{chain_length}x{num_chains}_6-npt.nc",
+    f"{polymer}_n-{chain_length}x{num_chains}_7-nvt-pr.nc",
+    ]
+
+# Create working directory for hydrate equilibration and copy necessary files
+os.chdir(hyd_eq_dir)
+
+for params in [
+	f"h.prepi",
+	f"t.prepi",
+    f"{polymer}_m.prepi"
+    f"{polymer}_gaff2.frcmod"
+]:
+	shutil.copy(os.path.join(init_dir, params), hyd_eq_dir)
