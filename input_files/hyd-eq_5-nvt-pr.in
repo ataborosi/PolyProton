@@ -1,0 +1,9 @@
+5-nvt
+&cntrl
+imin=0, irest=1, ntx=5,
+ntpr=10000, ntwx=10000, ntwr=100000,
+nstlim=1000000, dt=0.001,
+ntt=3, tempi=300, temp0=300, tautp=2, ig=-1, gamma_ln=1.0,
+ntp=0, ntc=2, ntf=2, cut=10, ntr=0, ntb=1, nrespa=1,
+iwrap=1,
+/
