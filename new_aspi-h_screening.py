@@ -400,6 +400,8 @@ class Dry_MDSimulation():
 		for step in steps:
 			self.run_simulation(*step)
 
+
+
 class Analysis():
 	def merge_nc_files(self, prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file):
 		ambpdb_command = f"ambpdb -p {prmtop_file} -c {ncrst_file} > {pdb_file}"
@@ -439,7 +441,7 @@ for cards in ["head", "main", "tail"]:
 
 os.chdir(init_dir)
 
- Details of polymer
+# Details of polymer
 backbone_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
 sidechain_smiles="OCCCS(O)(=O)=O"
 benzene_smiles="C1=CC=CC=C1"
@@ -544,10 +546,66 @@ with open(output, 'a') as f:
 # Create working directory for hydrate equilibration and copy necessary files
 os.chdir(hyd_eq_dir)
 
+shutil.copy(os.path.join(dry_eq_dir, pdb_file), hyd_eq_dir)
+shutil.copy(os.path.join(input_dir, "h2o.pdb"), hyd_eq_dir)
+
 for params in [
-	f"h.prepi",
-	f"t.prepi",
+	"h.prepi",
+	"t.prepi",
 	f"{polymer}_m.prepi",
 	f"{polymer}_gaff2.frcmod",
 ]:
 	shutil.copy(os.path.join(init_dir, params), hyd_eq_dir)
+for inputs in [
+    "hyd-eq_0-min.in",
+    "hyd-eq_1-nvt.in",
+    "hyd-eq_2-nvt.in",
+    "hyd-eq_3-nvt.in",
+    "hyd-eq_4-npt.in",
+    "hyd-eq_5-nvt-pr.in",
+]:
+    shutil.copy(os.path.join(init_dir, inputs), hyd_eq_dir)
+
+# Run the hydrated equilibration md simulations sequence using Amber software (pmemd.cuda) for different hydration levels (lambda)
+lam_list = [4, 8, 12]
+base_hyd_pdb = pdb_file
+polymer_file = read(base_hyd_pdb)
+cell = poly.cell
+a, b, c = cell.lengths()
+num_S = sum(1 for atom in polymer_file if atom.symbol == "S")
+
+for i, lam in enumerate(lam_list):
+    if i > 0:
+        base_hyd_pdb = f"{polymer}_{chain_length}x{num_chains}_{lam_list[i-1]}-h2o.pdb"
+        polymer_file = read(base_hyd_pdb)
+        cell = poly.cell
+        a, b, c = cell.lengths()
+    
+    num_h2o = lam * num_S
+    
+    lam_dir = os.path.join(hyd_eq_dir, f"{lam}_h2o")
+    lam_init_dir = os.path.join(lam_dir, "init")
+    lam_md_dir = os.path.join(lam_dir, "md")
+    
+    os.makedirs(lam_dir, exist_ok=True)
+    os.makedirs(lam_init_dir, exits_ok=True)
+    os.makedirs(lam_md_dir, exist_ok=True)
+    
+    for fname in [
+        "h.prepi",
+        "t. prepi",
+        f"{polymer}_m.prepi",
+        f"{polymer}_gaff2.frcmod",
+        "h2o.pdb",
+        base_hyd_pdb,
+    ]:
+        shutil.copy(os.path.join(hyd_eq_dir, fname), lam_dir)
+    
+    for fname in [
+        "hyd-eq_0-min.in",
+        "hyd-eq_1-nvt.in",
+        "hyd-eq_2-nvt.in",
+        "hyd-eq_3-nvt.in",
+        "hyd-eq_4-npt.in",
+        "hyd-eq_5-nvt-pr.in",
+    ]:
