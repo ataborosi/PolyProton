@@ -31,6 +31,9 @@ profile = OrcaProfile(command='/opt/orca/orca')
 base_dir = os.getcwd()
 output = os.path.join(base_dir, 'new_aspi-h_process_temp.txt')
 
+def get_nproc(default=4):
+    return int(os.environ.get("SLURM_NTASKS", default))
+
 class MonomerBuilder:
 	def __init__(self, polymer, backbone_smiles, sidechain_smiles, benzene_smiles, conf_num):
 		self.polymer = polymer
@@ -388,10 +391,11 @@ class Dry_MDSimulation():
 
 		subprocess.run(f"cp * {self.dir1}", shell=True, check=True)
 		shutil.rmtree(temp_dir)
+
+		os.chdir(self.dir1)
 		shutil.rmtree(folder_name)
 		with open(self.output, 'a') as f:
 			print(f"\t\tFinished {step_name} step", file=f)
-		os.chdir(self.dir1)
 
 	def run_all_steps(self):
 		steps = [
@@ -589,7 +593,7 @@ conf_output_file = f"{polymer}_conf.txt"
 temperature = 300
 chain_length = 15
 num_chains = 20
-nproc = 24
+nproc = get_nproc()
 use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
 
 with open(output, 'a') as f:
@@ -634,7 +638,7 @@ with open(output, 'a') as f:
 	print(f"\tAmber parameters are created for the bulk phase", file=f)
 
 # Create a working directory for dry equilibration simulations and copy necessary files	
-s.chdir(dry_eq_dir)
+os.chdir(dry_eq_dir)
 
 for params in [
 	f"{polymer}_n-{chain_length}x{num_chains}.prmtop",
