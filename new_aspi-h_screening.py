@@ -176,8 +176,12 @@ class GAFF2Param:
 		atom_lines = mol2_lines[atom_start + 1:bond_start]
 		atom_data = [line.split() for line in atom_lines]
 		atom_df = pd.DataFrame(atom_data)
-#		molden_chg_file = f'{self.polymer}.chg'
-		molden_chg_file = f'{self.polymer}.molden.chg'
+		chg_candidates = [f"{self.polymer}.molden.chg", f"{self.polymer}.chg"]
+		molden_chg_file = None
+		for f in chg_candidates:
+			if os.path.exists(f):
+				molden_chg_file = f
+				break
 		molden_df = pd.read_csv(molden_chg_file, delim_whitespace=True, header=None)
 		atom_df[7] = self.polymer
 		atom_df[8] = molden_df[4].map('{:.4f}'.format)
