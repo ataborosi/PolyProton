@@ -462,7 +462,8 @@ class Hyd_AmberParams:
 		with open("final_leap_input.in", "w") as f:
 			f.write(f"""
 			source leaprc.gaff2
-			source leaprc.water.tip4p
+			source leaprc.water.tip3p
+            loadamberparams frcmod.tip4p
 			loadamberprep h.prepi
 			loadamberprep t.prepi
 			loadamberprep {self.polymer}_m.prepi
