@@ -15,7 +15,7 @@ from ase.constraints import FixAtoms
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdGeometry, Draw
 
-from Bio.PDB import PDBParser, PDBIO, Atom
+from Bio.PDB import PDBParser, PDBIO, Atom, NeighborSearch
 
 from scipy.spatial.transform import Rotation as R
 
@@ -731,6 +731,113 @@ class Analysis():
 		for file in os.listdir():
 			if file.startswith(prefix):
 				os.remove(file)			
+
+class PDBCleaner:
+    def __init__(self, input_pdb_file, output_pdb_file, chain_length):
+        self.input_pdb_file = input_pdb_file
+        self.output_pdb_file = output_pdb_file
+        self.chain_length = chain_length
+        self.parser = PDBParser(QUIET=True)
+        self.structure = self.parser.get_structure('polymer', input_pdb_file)
+        self.hydrogens_removed_count = 0
+    
+    def remove_so3h_hydroges(self):
+        atoms = list(self.structure.get_atoms())
+        ns = NeighborSearch(atoms)
+        
+        hydrogens_to_remove = set()
+        
+        for residue in self.structure.get_residues():
+            s_atoms = [atom for atom in residue if atom.element == 'S']
+            for s_atom in s_atoms:
+                o_atoms = [atom for atom in ns.search(s_atom.coord, 1.8) if atom.element == 'O']
+                for o_atom in o_atoms:
+                    h_atoms = [atom for atom in ns.search(o_atom.coord, 1.2) if atom.element == 'H']
+                    hydrogens_to_remove.update(h_atoms)
+        
+        for h_atom in hydrogens_to_remove:
+            residue = h_atom.get_parent()
+            residue.detach_child(h_atom.id)
+            
+        self.hydrogens_removed_count = len(hydrogens_to_remove)
+        
+        wat_removed = 0
+        for model in self.structure:
+            for chain in model:
+                for residue in list(chain):
+                    if residue.get_resname().strip() in ['HOH', 'WAT']:
+                        if wat_removed < self.hydrogens_removed_count:
+                            chain.detach_child(resideu.id)
+                            wat_removed += 1
+                        else:
+                            break
+                if wat_removed >= self.hydrogens_removed_count:
+                    break
+            if wat_removed >= self.hydrogens_removed_count:
+                break
+                    
+        self.save_structure()
+
+    def save_structure(self):
+        temp_output = "temp_cleaned.pdb"
+        io = PDBIO()
+        io.set_structure(self.structure)
+        io.save(temp_output)
+        
+        with open(self.input_pdb_file, 'r') as original:
+            original_lines = original.readlines()
+            
+        cryst_line = next((line for line in original_liens if line.startswith("CRYST1")), "")
+        box_line = next((line for line in reversed(original_lines) if len(line.strip().split()) == 6), "")
+        
+        with open(temp_output, 'r') as cleaned:
+            cleaned_lines = [line for line in cleaned if line.startswith("ATOM") or line.startswith("HETATM")]
+        
+        final_lines = []
+        if cryst_line:
+            final_lines.append(cryst_line)
+        
+        current_res_id = None
+        current_res_name = None
+        res_count = 0
+        
+        for line in cleaned_lines:
+            res_name = line[17:20].strip()
+            res_id = int(line[22:26])
+            
+            if res_id != current_res_id:
+                res_count += 1
+                if res_name not in ["WAT", "HOH"] and (res_count - 1) % self.chain_length == 0 and res_count != 1:
+                    final_lines.append("TER\n")
+                if res_name in ["WAT", "HOH"] and current_res_name not in ["WAT", "HOH", None]:
+                    final_lines.append("TER\n")
+                    
+            final_lines.append(line)
+            current_res_id = res_id
+            current_res_name = res_name
+            
+        final_lines.append("TER\nEND\n")
+        if box_line:
+            final_lines.append(box_line + '\n')
+            
+        with open(self.output_pdb_file, 'w') as out:
+            out.writelines(final_lines)
+        
+        os.remove(temp_output)
+
+class Cond_BulkCreator:
+    def __init__(self, polymer, chain_length, num_chains, a, b, c, num_h3o, lam, pdb_file):
+        self.polymer = polymer
+        self.chain_length = chain_length
+        self.num_chains = num_chains
+        self.box_a = a
+        self.box_b = b
+        self.box_c = c
+        self.num_h3o = num_h3o
+        self.lam = lam
+        self.pdb_file = pdb_file
+        
+    def packmol_generate_box(self):
 	
 # Create a working directory for polymer with subfolders and copy polymer connectivity cards			
 polymer = 'a1'
