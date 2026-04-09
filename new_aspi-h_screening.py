@@ -32,7 +32,126 @@ base_dir = os.getcwd()
 output = os.path.join(base_dir, 'new_aspi-h_process_temp.txt')
 
 def get_nproc(default=4):
-    return int(os.environ.get("SLURM_NTASKS", default))
+	return int(os.environ.get("SLURM_NTASKS", default))
+
+class Mol2Modification:
+	def __init__(self, input_mol2, output_mol2=None, remove_atom_types=None):
+		self.input_mol2 = input_mol2
+		self.output_mol2 = output_mol2
+		self.remove_atom_types = remove_atom_types
+	
+	def split_sections(self, lines):
+		sections = {}
+		current = None
+		for line in lines:
+			if line.startswith("@<TRIPOS>"):
+				current = line.strip()
+				sections[current] = []
+			elif current is not None:
+				sections[current].append(line)
+		return sections
+
+	def parse_atom_line(self, line):
+		parts = line.split()
+		return {
+			"atom_id": int(parts[0]),
+			"atom_name": parts[1],
+			"x": float(parts[2]),
+			"y": float(parts[3]),
+			"z": float(parts[4]),
+			"atom_type": parts[5],
+			"subst_id": parts[6],
+			"subst_name": parts[7],
+			"charge": float(parts[8]),
+		}
+	
+	def parse_bond_line(self, line):
+		parts = line.split()
+		return {
+			"bond_id": int(parts[0]),
+			"origin": int(parts[1]),
+			"target": int(parts[2]),
+			"bond_type": parts[3],
+		}
+	
+	def format_atom(self, atom):
+		return (
+			f"{atom['atom_id']:>7} "
+			f"{atom['atom_name']:<8}"
+			f"{atom['x']:>10.4f}"
+			f"{atom['y']:>10.4f}"
+			f"{atom['z']:>10.4f} "
+			f"{atom['atom_type']:<6}"
+			f"{int(atom['subst_id']):>6} "
+			f"{(atom['subst_name']):<8}"
+			f"{(atom['charge']):>12.6f}\n"
+		)		
+	
+	def format_bond(self, bond):
+		return (
+			f"{bond['bond_id']:>6} "
+			f"{bond['origin']:>5} "
+			f"{bond['target']:>5} "
+			f"{bond['bond_type']}\n"
+		)
+	
+	def remove_atoms_bonds(self):
+		with open(self.input_mol2, "r") as f:
+			lines = f.readlines()
+			
+		sections = self.split_sections(lines)
+		
+		atoms = [self.parse_atom_line(line) for line in sections["@<TRIPOS>ATOM"] if line.strip()]
+		bonds = [self.parse_bond_line(line) for line in sections["@<TRIPOS>BOND"] if line.strip()]
+		
+		atoms_to_remove = {
+			atom["atom_id"]
+			for atom in atoms
+			if atom["atom_type"].lower() in self.remove_atom_types
+		}
+		
+		kept_atoms = [atom for atom in atoms if atom["atom_id"] not in atoms_to_remove]
+		
+		if "ho" in self.remove_atom_types:
+			for atom in kept_atoms:
+				if atom["atom_type"].lower() == "oh":
+					atom["atom_type"] = "o"
+		
+		atom_id_map = {}
+		for new_id, atom in enumerate(kept_atoms, start=1):
+			atom_id_map[atom["atom_id"]] = new_id
+			atom["atom_id"] = new_id
+		
+		kept_bonds = []
+		for bond in bonds:
+			if bond["origin"] in atoms_to_remove or bond["target"] in atoms_to_remove:
+				continue
+			bond["origin"] = atom_id_map[bond["origin"]]
+			bond["target"] = atom_id_map[bond["target"]]
+			kept_bonds.append(bond)
+		
+		for new_id, bond in enumerate(kept_bonds, start=1):
+			bond["bond_id"] = new_id
+		
+		molecule_lines = sections.get("@<TRIPOS>MOLECULE", [])
+		mol_name = molecule_lines[0]
+		counts_line = f"{len(kept_atoms):>5} {len(kept_bonds):>5}	  1		0	  0\n"
+		
+		new_molecule_lines = [mol_name, counts_line]
+		if len(molecule_lines) > 2:
+			new_molecule_lines.extend(molecule_lines[2:])
+		
+		with open(self.output_mol2, "w") as f:
+			f.write("@<TRIPOS>MOLECULE\n")
+			f.writelines(new_molecule_lines)
+			
+			f.write("@<TRIPOS>ATOM\n")
+			for atom in kept_atoms:
+				f.write(self.format_atom(atom))
+			
+			f.write("@<TRIPOS>BOND\n")
+			for bond in kept_bonds:
+				f.write(self.format_bond(bond))
 
 class MonomerBuilder:
 	def __init__(self, polymer, backbone_smiles, sidechain_smiles, benzene_smiles, conf_num):
@@ -139,39 +258,50 @@ class GAFF2Param:
 		self.polymer = polymer
 		self.chain_length = chain_length
 		self.nproc = nproc
+
+	def remove_atoms(self, mol_in, mol_out):
+		mol_in = read(mol_in)
+		o_indices = [i for i, s in enumerate(mol_in.get_chemical_symbols()) if s == "O"]
+		oh_h_indices = [
+			h for h, s in enumerate(mol_in.get_chemical_symbols())
+			if s == "H" and any(mol_in.get_distance(h, o, mic=True) < 1.2 for o in o_indices)
+		]
+		for i in sorted(oh_h_indices, reverse=True):
+			del mol_in[i]
+		write(mol_out, mol_in)
 		
-	def orca_calculation(self, mol):
+	def orca_calculation(self, mol, charge, mult, file_name):
 		orca_calc = ORCA(
 			profile=profile,
 			orcasimpleinput='wb97x-d4 def2-svp def2/j rijcosx tightscf',
-			charge=0,
-			mult=1,
+			charge=charge,
+			mult=mult,
 			orcablocks=f'%pal nprocs {self.nproc} end'
 		)
 		mol.set_calculator(orca_calc)
 		mol.get_potential_energy()
 		for f in glob.glob("orca.*"):
-			new_name = f.replace("orca.", f"{self.polymer}.", 1)
+			new_name = f.replace("orca.", f"{file_name}.", 1)
 			if not os.path.exists(new_name):
 				shutil.move(f, new_name)	
-		orca_command = f'/opt/orca/orca_2mkl {self.polymer} -molden'
+		orca_command = f'/opt/orca/orca_2mkl {file_name} -molden'
 		subprocess.run(orca_command, shell=True, check=True)
 
-	def run_multiwfn(self):
-		molden_file = f'{self.polymer}.molden.input'
+	def run_multiwfn(self, file_name):
+		molden_file = f'{file_name}.molden.input'
 		multiwfn_input = f'{molden_file}\n7\n18\n10\n2\n1\ny\n0\n0\nq\n'
 		with open("multiwfn_input.txt", "w") as input_file:
 			input_file.write(multiwfn_input)
 		multiwfn_command = f'Multiwfn < multiwfn_input.txt -set /opt/multiwfn/settings.ini'
 		subprocess.run(multiwfn_command, shell=True, check=True)
 
-	def convert_xyz_to_mol2(self, mol):
-		mol2_file = f'{self.polymer}.mol2'
-		obabel_command = f'obabel -i xyz {mol} -O {mol2_file}'
+	def convert_xyz_to_mol2(self, xyz_file, file_name):
+		mol2_file = f'{file_name}.mol2'
+		obabel_command = f'obabel -i xyz {xyz_file} -O {mol2_file}'
 		subprocess.run(obabel_command, shell=True, check=True)
 
-	def modify_mol2_file(self):
-		mol2_file = f'{self.polymer}.mol2'
+	def modify_mol2_file(self, file_name, mod_file_name):
+		mol2_file = f'{file_name}.mol2'
 		with open(mol2_file, 'r') as f:
 			mol2_lines = f.readlines()
 		atom_start = next(i for i, line in enumerate(mol2_lines) if line.startswith('@<TRIPOS>ATOM'))
@@ -179,7 +309,7 @@ class GAFF2Param:
 		atom_lines = mol2_lines[atom_start + 1:bond_start]
 		atom_data = [line.split() for line in atom_lines]
 		atom_df = pd.DataFrame(atom_data)
-		chg_candidates = [f"{self.polymer}.molden.chg", f"{self.polymer}.chg"]
+		chg_candidates = [f"{file_name}.molden.chg", f"{file_name}.chg"]
 		molden_chg_file = None
 		for f in chg_candidates:
 			if os.path.exists(f):
@@ -189,11 +319,15 @@ class GAFF2Param:
 		atom_df[7] = self.polymer
 		atom_df[8] = molden_df[4].map('{:.4f}'.format)
 		atom_lines_modified = [' '.join(row) + '\n' for row in atom_df.values.astype(str)]
-		modified_mol2_file = f'{self.polymer}_mod.mol2'
+		modified_mol2_file = f'{mod_file_name}.mol2'
 		with open(modified_mol2_file, 'w') as f:
 			f.writelines(mol2_lines[:atom_start + 1] + atom_lines_modified + mol2_lines[bond_start:])
 
-	def run_antechamber(self):
+	def modify_mol2_file_temp(self, input_mol2, output_mol2, remove_atom_types):
+		modifier = Mol2Modification(input_mol2=input_mol2, output_mol2=output_mol2, remove_atom_types=remove_atom_types)
+		modifier.remove_atoms_and_bonds()
+
+	def run_antechamber_v1(self):
 		antechamber_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_mod.mol2 -fi mol2 -o {self.polymer}_gaff2.mol2 -fo mol2 -at gaff2'
 		subprocess.run(antechamber_command_1, shell=True, check=True)
 		antechamber_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_gaff2.mol2 -fi mol2 -o {self.polymer}.ac -fo ac'
@@ -204,6 +338,20 @@ class GAFF2Param:
 		subprocess.run(prepgen_command_1, shell=True, check=True)
 		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o h.prepi -f prepi -m head -rn H'
 		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o t.prepi -f prepi -m tail -rn T'
+		subprocess.run(prepgen_command_2, shell=True, check=True)
+		subprocess.run(prepgen_command_3, shell=True, check=True)
+
+	def run_antechamber_v2(self):
+		antechamber_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_so3_mod.mol2 -fi mol2 -o {self.polymer}_so3_gaff2.mol2 -fo mol2 -at gaff2'
+		subprocess.run(antechamber_command_1, shell=True, check=True)
+		antechamber_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_so3_gaff2.mol2 -fi mol2 -o {self.polymer}_so3.ac -fo ac'
+		subprocess.run(antechamber_command_2, shell=True, check=True)
+		antechamber_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/parmchk2 -i {self.polymer}_so3_gaff2.mol2 -f mol2 -o {self.polymer}_so3_gaff2.frcmod -s 2'
+		subprocess.run(antechamber_command_3, shell=True, check=True)	
+		prepgen_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o {self.polymer}_m_so3.prepi -f prepi -m main_so3 -rn {self.polymer}'
+		subprocess.run(prepgen_command_1, shell=True, check=True)
+		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o h_so3.prepi -f prepi -m head_so3 -rn H'
+		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o t_so3.prepi -f prepi -m tail_so3 -rn T'
 		subprocess.run(prepgen_command_2, shell=True, check=True)
 		subprocess.run(prepgen_command_3, shell=True, check=True)
 
@@ -231,14 +379,30 @@ class GAFF2Param:
 		subprocess.run(f'tleap -f {leap_input_filename} > {leap_output_filename}', shell=True, check=True)
 	
 	def parameterization(self):
-		mol = read(f'{self.polymer}_0_opt.xyz')
-		mol_name = f'{self.polymer}_0_opt.xyz'
-		self.orca_calculation(mol)
-		self.run_multiwfn()
-		self.convert_xyz_to_mol2(mol_name)
-		self.modify_mol2_file()
-		self.run_antechamber()
+		read_xyz_1 = read(f'{self.polymer}_0_opt.xyz')
+		xyz_file_1 = f'{self.polymer}_0_opt.xyz'
+		file_name_1 = f"{self.polymer}"
+		mod_file_name_1 = f"{self.polymer}_mod"
+		charge_1 = 0
+		mult_1 = 1
+		self.orca_calculation(read_xyz_1, charge_1, mult_1, file_name_1)
+		self.run_multiwfn(file_name_1)
+		self.convert_xyz_to_mol2(xyz_file_1, file_name_1)
+		self.modify_mol2_file(file_name_1, mod_file_name_1)
+		self.run_antechamber_v1()
 		self.create_polymer_chain()
+		xyz_file_2 = f'{self.polymer}_0_opt_so3.xyz'
+		charge_2 = -2
+		mult_2 = 1
+		self.remove_atoms(xyz_file_1, xyz_file_2)
+		read_xyz_2 = read(f'{self.polymer}_0_opt_so3.xyz')
+		file_name_2 = f"{self.polymer}_so3"
+		mod_file_name_2 = f"{self.polymer}_so3_mod"
+		self.orca_calculation(read_xyz_2, charge_2, mult_2, file_name_2)
+		self.run_multiwfn(file_name_2)
+		self.convert_xyz_to_mol2(xyz_file_2, file_name_2)
+		self.modify_mol2_file(file_name_2, mod_file_name_2)
+		self.run_antechamber_v2()
 
 class Dry_BulkCreator:
 	def __init__(self, polymer, chain_length, num_chains):
@@ -463,7 +627,7 @@ class Hyd_AmberParams:
 			f.write(f"""
 			source leaprc.gaff2
 			source leaprc.water.tip3p
-            loadamberparams frcmod.tip4p
+			loadamberparams frcmod.tip4p
 			loadamberprep h.prepi
 			loadamberprep t.prepi
 			loadamberprep {self.polymer}_m.prepi
@@ -528,6 +692,8 @@ class Hyd_MDSimulation():
 
 		subprocess.run(f"cp * {self.dir1}", shell=True, check=True)
 		shutil.rmtree(temp_dir)
+
+		os.chdir(self.dir1)
 		shutil.rmtree(folder_name)
 		with open(self.output, 'a') as f:
 			print(f"\t\tFinished hydration level lambda = {self.lam} {step_name} step", file=f)
@@ -580,7 +746,7 @@ os.makedirs(init_dir, exist_ok=True)
 os.makedirs(dry_eq_dir, exist_ok=True)
 os.makedirs(hyd_eq_dir, exist_ok=True)
 
-for cards in ["head", "main", "tail"]:
+for cards in ["head", "main", "tail", "head_so3", "main_so3", "tail_so3"]:
 	shutil.copy(os.path.join(input_dir, cards), init_dir)
 
 os.chdir(init_dir)
@@ -627,14 +793,14 @@ with open(output, 'a') as f:
 	print(f"\tGAFF2 parameters and single polymer chain creation finished", file=f)
 
 # Align the single polymer chain, define the box dimension based on the polymer chain, and create the bulk phase
-bulk_creator = Dry_BulkCreator(polymer, chain_length, num_chains)
-bulk_creator.create_bulk_phase()
+dry_bulk_creator = Dry_BulkCreator(polymer, chain_length, num_chains)
+dry_bulk_creator.create_bulk_phase()
 with open(output, 'a') as f:
 	print(f"\tAlignment of single polymer chain and bulk phase creation finished", file=f)
 	
 # Create amber parameters
-amber = Dry_AmberParams(polymer, chain_length, num_chains, bulk_creator = bulk_creator)
-amber.create_amber_params()
+dry_amber = Dry_AmberParams(polymer, chain_length, num_chains, bulk_creator = dry_bulk_creator)
+dry_amber.create_amber_params()
 with open(output, 'a') as f:
 	print(f"\tAmber parameters are created for the bulk phase", file=f)
 
@@ -662,7 +828,7 @@ for inputs in [
 # Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
 with open(output, 'a') as f:
 	print(f"\tDry equilibration MD simulations started", file=f)
-dry_md = Dry_MDSimulation(nproc, output, amber_params=amber, use_gpu=use_gpu)
+dry_md = Dry_MDSimulation(nproc, output, amber_params=dry_amber, use_gpu=use_gpu)
 dry_md.run_all_steps()
 with open(output, 'a') as f:
 	print(f"\tDry equilibration MD simulations finished", file=f)
@@ -786,12 +952,14 @@ for i, lam in enumerate(lam_list):
 	# Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
 	with open(output, 'a') as f:
 		print(f"\tHydrated equilibration MD simulations started", file=f)
-	hyd_md = Hyd_MDSimulation(nproc, output, amber_params=amber, use_gpu=use_gpu)
+	hyd_md = Hyd_MDSimulation(nproc, output, amber_params=hyd_amber, use_gpu=use_gpu)
 	hyd_md.run_all_steps()
 	with open(output, 'a') as f:
 		print(f"\tHydrated equilibration MD simulations finished", file=f)
 	
+	hyd_prmtop = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop"
 	final_hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.pdb"
 	subprocess.run(f"ambpdb -p {hyd_prmtop} -c hyd-eq_5-nvt-pr.ncrst > {final_hyd_pdb}", shell=True, check=True)
+
 	shutil.copy(final_hyd_pdb, hyd_eq_dir)
 	os.chdir(hyd_eq_dir)
