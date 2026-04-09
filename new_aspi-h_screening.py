@@ -577,13 +577,13 @@ class Dry_MDSimulation():
 			self.run_simulation(*step)
 
 class Hyd_BulkCreator:
-	def __init__(self, polymer, chain_length, num_chains, a, b, c, num_h2o, lam, pdb_file):
+	def __init__(self, polymer, chain_length, num_chains, x, y, z, num_h2o, lam, pdb_file):
 		self.polymer = polymer
 		self.chain_length = chain_length
 		self.num_chains = num_chains
-		self.box_a = a
-		self.box_b = b
-		self.box_c = c
+		self.box_size_x = x
+		self.box_size_y = y
+		self.box_size_z = z
 		self.num_h2o = num_h2o
 		self.lam = lam
 		self.pdb_file = pdb_file
@@ -596,7 +596,7 @@ class Hyd_BulkCreator:
 			add_amber_ter
 			amber_ter_preserve
 			output {self.polymer}_n-{self.chain_length}x{self.num_chains}_{self.lam}-h2o.pdb
-			pbc {self.box_a} {self.box_b} {self.box_c}
+			pbc {self.box_size_x} {self.box_size_y} {self.box_size_z}
 			structure {self.pdb_file}
 			number 1
 			fixed 0. 0. 0. 0. 0. 0.
@@ -616,9 +616,9 @@ class Hyd_AmberParams:
 		self.polymer = polymer
 		self.chain_length = chain_length
 		self.num_chains = num_chains
-		self.box_size_x = bulk_creator.box_a
-		self.box_size_y = bulk_creator.box_b
-		self.box_size_z = bulk_creator.box_c
+		self.box_size_x = bulk_creator.box_size_x
+		self.box_size_y = bulk_creator.box_size_y
+		self.box_size_z = bulk_creator.box_size_z
 		self.lam = bulk_creator.lam
 		self.pdb_file = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}_{self.lam}-h2o.pdb"
 
@@ -826,19 +826,50 @@ class PDBCleaner:
         os.remove(temp_output)
 
 class Cond_BulkCreator:
-    def __init__(self, polymer, chain_length, num_chains, a, b, c, num_h3o, lam, pdb_file):
+    def __init__(self, polymer, chain_length, num_chains, x, y, z, num_h3o, lam, pdb_file):
         self.polymer = polymer
         self.chain_length = chain_length
         self.num_chains = num_chains
-        self.box_a = a
-        self.box_b = b
-        self.box_c = c
+        self.box_size_x = x
+        self.box_size_y = y
+        self.box_size_z = z
         self.num_h3o = num_h3o
         self.lam = lam
         self.pdb_file = pdb_file
         
     def packmol_generate_box(self):
+        with open("packmol_input.in", "w") as f:
+            f.write(f"""
+            tolerance 1.5
+            filetype pdb
+            add_amber_ter
+            amber_ter_preserve
+            output {self.polymer}_n-{self.chain_length}x{self.num_chains}_{self.lam}-h3o-h2o.pdb
+            pbc {self.box_size_x} {self.box_size_y} {self.box_size_z}
+            structure {self.pdb_file}
+            number 1
+            fixed 0. 0. 0. 0. 0. 0.
+            end structure
+            structure h3o.pdb
+            number {self.num_h3o}
+            end structure
+            """)
 	
+        subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True, check=True)
+    
+    def create_bulk_phase(self):
+        self.packmol_generate_box()
+
+class Cond_AmberParams:
+    def __init__(self, polymer, chain_length, num_chains, bulk_creator: Cond_BulkCreator):
+        self.polymer = polymer
+        self.chain_length = chain_length
+        self.num_chains = num_chains
+        self_box_size_x = bulk_creator.box_size_x
+        self_box_size_y = bulk_creator.box_size_y
+        self_box_size_z = bulk_creator.box_size_z
+        
+    
 # Create a working directory for polymer with subfolders and copy polymer connectivity cards			
 polymer = 'a1'
 base_dir = os.getcwd()
