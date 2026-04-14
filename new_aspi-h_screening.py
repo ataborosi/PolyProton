@@ -576,6 +576,26 @@ class Dry_MDSimulation():
 		for step in steps:
 			self.run_simulation(*step)
 
+class Analysis():
+	def merge_nc_files(self, prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file):
+		ambpdb_command = f"ambpdb -p {prmtop_file} -c {ncrst_file} > {pdb_file}"
+		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		
+		with open(cpptraj_file, 'w') as file:
+			for nc_file in nc_files:			
+				file.write(f"trajin {nc_file} 1 100 10\n")
+			file.write(f"trajout {prefix} pdb multi\n")
+		
+		cpptraj_command = f"cpptraj -i {cpptraj_file} -p {prmtop_file}"
+		subprocess.run(cpptraj_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		
+		merge_command = f"ls -v {prefix}* | xargs cat > {merged_pdb}"
+		subprocess.run(merge_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		
+		for file in os.listdir():
+			if file.startswith(prefix):
+				os.remove(file)			
+
 class Hyd_BulkCreator:
 	def __init__(self, polymer, chain_length, num_chains, x, y, z, num_h2o, lam, pdb_file):
 		self.polymer = polymer
@@ -661,7 +681,7 @@ class Hyd_MDSimulation():
 		
 	def run_simulation(self, step_name, input_file, output_file, restart_in, restart_out, reference_file, additional_args=""):
 		with open(self.output, "a") as f:
-			print(f"\t\tStarted hydration level lambda = {self.lam} {step_name} step", file=f)
+			print(f"\t\tStarted {step_name} step", file=f)
 			
 		temp_dir = subprocess.check_output(['mktemp', '-d', f'/home/Calculations/{self.uname}/XXXXXX']).decode().strip()
 		folder_name = f"{step_name}"
@@ -696,7 +716,7 @@ class Hyd_MDSimulation():
 		os.chdir(self.dir1)
 		shutil.rmtree(folder_name)
 		with open(self.output, 'a') as f:
-			print(f"\t\tFinished hydration level lambda = {self.lam} {step_name} step", file=f)
+			print(f"\t\tFinished {step_name} step", file=f)
 		os.chdir(self.dir1)
 
 	def run_all_steps(self):
@@ -711,26 +731,6 @@ class Hyd_MDSimulation():
 
 		for step in steps:
 			self.run_simulation(*step)
-
-class Analysis():
-	def merge_nc_files(self, prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file):
-		ambpdb_command = f"ambpdb -p {prmtop_file} -c {ncrst_file} > {pdb_file}"
-		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-		
-		with open(cpptraj_file, 'w') as file:
-			for nc_file in nc_files:			
-				file.write(f"trajin {nc_file} 1 100 10\n")
-			file.write(f"trajout {prefix} pdb multi\n")
-		
-		cpptraj_command = f"cpptraj -i {cpptraj_file} -p {prmtop_file}"
-		subprocess.run(cpptraj_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-		
-		merge_command = f"ls -v {prefix}* | xargs cat > {merged_pdb}"
-		subprocess.run(merge_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-		
-		for file in os.listdir():
-			if file.startswith(prefix):
-				os.remove(file)			
 
 class PDBCleaner:
     def __init__(self, input_pdb_file, output_pdb_file, chain_length):
@@ -868,7 +868,95 @@ class Cond_AmberParams:
         self_box_size_x = bulk_creator.box_size_x
         self_box_size_y = bulk_creator.box_size_y
         self_box_size_z = bulk_creator.box_size_z
+        self.lam = bulk_creator.lam
+        self.num_h3o = bulk_creator.num_h3o
+        self.pdb_file = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}_{self.lam}-h3o-h2o.pdb"
+    
+    def create_amber_params(self):
+        with open("final_leap_input.in", w) as f:
+            f.write(f"""
+            source leaprc.gaff2
+            source leaprc.water.tip3p
+            loadamberparams frcmod.tip4p
+            loadamberprep h_so3.prepi
+            loadamberprep t_so3.prepi
+            loadamberprep {self.polymer}_m_so3.prepi
+            loadamberparams {self.polymer}_so3_gaff2.frcmod
+            loadamberprep h3o.prepi
+            loadamberparams h3o.frcmod
+            mol = loadpdb {self.pdb_file}
+            set mol box {{ {self.box_size_x} {self.box_size_y} {self.box_size_z} }}
+            set default nocenter on
+            saveamberparm mol {self.polymer}_n-{self.chain_length}x{self.num_chains}_{self.lam}-h3o-h2o.prmtop {self.polymer}_n-{self.chain_length}x{self.num_chains}_{self.lam}-h3o-h2o.inpcrd
+            quit
+            """)
         
+		self.prmtop = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}_{self.lam}-h3o-h2o.prmtop"
+		self.inpcrd = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}_{self.lam}-h3o-h2o.inpcrd"
+		amber_pdb = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}_{self.lam}-h3o-h2o_amber.pdb"
+	
+		subprocess.run('tleap -f final_leap_input.in > final_leap_input.out', shell=True, check=True)
+		ambpdb_command = f"ambpdb -p {self.prmtop} -c {self.inpcrd} > {amber_pdb}"
+		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+class Cond_MDSimulation:
+    def __init__(self, nproc, output, amber_params: Cond_AmberParams, use_gpu=True):
+        self.prmtop = amber_params.prmtop
+        self.inpcrd = amber_params.inpcrd
+        self.lam = amber_params.lam
+        self.nproc = nproc
+        self.dir1 = os.getcwd()
+        self.uname = getpass.getuser()
+        self.output = output
+        self.use_gpu = use_gpu
+        
+    def run_simulation(self, step_name, input_file, output_file, restart_in, restart_out, reference_file, additional_args=""):
+        with open(self.output, "a") as f:
+            print(f"\t\tStarted {step_name} step", file=f)
+        
+        temp_dir = subprocess.check_output(['mktemp', '-d', f'/home/Calculations/{self.uname}/XXXXXX']).decode().strip()
+        folder_name = f"{step_name}"
+        os.makedirs(folder_name, exist_ok=True)
+        
+        files_to_copy = [input_file, self.prmtop, restart_in]
+        for file in files_to_copy:
+            if os.path.exists(file):
+                shutil.copy(file, folder_name)
+            else:
+                raise FileNotFoundError(f"{file} not found")
+        
+		os.chdir(folder_name)
+		subprocess.run(f"cp * {temp_dir}", shell=True, check=True)
+		os.chdir(temp_dir)
+        
+		if self.use_gpu:
+			if "min" in step_name:
+				cmd = f"mpirun -np {self.nproc} pmemd.MPI -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args}"
+			else:
+				cmd = f"pmemd.cuda -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args} -AllowSmallBox"
+		else:
+			cmd = f"mpirun -np {self.nproc} pmemd.MPI -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args}"
+
+		result = subprocess.run(cmd, shell=True)
+		if result.returncode != 0:
+			raise RuntimeError(f"{step_name} step failed")
+
+		subprocess.run(f"cp * {self.dir1}", shell=True, check=True)
+		shutil.rmtree(temp_dir)
+
+		os.chdir(self.dir1)
+		shutil.rmtree(folder_name)
+		with open(self.output, 'a') as f:
+			print(f"\t\tFinished {step_name} step", file=f)
+
+    def run_all_steps(self):
+        steps = [
+            ("cond_0-min", "cond_0-min.in", "cond_0-min.out", f"{self.inpcrd}", "cond_0-min.ncrst", f"{self.inpcrd}"),
+            ("cond_pr-nvt", "cond_pr-nvt.in", "cond_pr-nvt.out", "cond_0-min.ncrst", "cond_pr-nvt.ncrst", "cond_0-min.ncrst", "-x cond_pr-nvt.nc")
+        ]
+
+        for step in steps:
+            self.run_simulation(*step)
     
 # Create a working directory for polymer with subfolders and copy polymer connectivity cards			
 polymer = 'a1'
@@ -877,12 +965,14 @@ polymer_dir = os.path.join(base_dir, polymer)
 init_dir = os.path.join(polymer_dir, "init")
 dry_eq_dir = os.path.join(polymer_dir, "dry-eq")
 hyd_eq_dir = os.path.join(polymer_dir, "hyd-eq")
+cond_dir = os.path.join(polymer_dir, "cond")
 input_dir = os.path.join(base_dir, "input_files")
 
 os.makedirs(polymer_dir, exist_ok=True)
 os.makedirs(init_dir, exist_ok=True)
 os.makedirs(dry_eq_dir, exist_ok=True)
 os.makedirs(hyd_eq_dir, exist_ok=True)
+os.makedirs(cond_dir, exist_ok=True)
 
 for cards in ["head", "main", "tail", "head_so3", "main_so3", "tail_so3"]:
 	shutil.copy(os.path.join(input_dir, cards), init_dir)
@@ -992,7 +1082,7 @@ dry_md_analysis.merge_nc_files(prmtop_file, ncrst_file, pdb_file, nc_files, pref
 with open(output, 'a') as f:
 	print(f"\tDry equilibration trajectory merging finished", file=f)
 
-# Create working directory for hydrate equilibration and copy necessary files
+# Copy necessary files for hydrate equilibration
 os.chdir(hyd_eq_dir)
 
 shutil.copy(os.path.join(dry_eq_dir, pdb_file), hyd_eq_dir)
@@ -1015,7 +1105,7 @@ for inputs in [
 ]:
 	shutil.copy(os.path.join(input_dir, inputs), hyd_eq_dir)
 
-# Run the hydrated equilibration MD simulations sequence using Amber software (pmemd.cuda) for different hydration levels (lambda)
+# Run the hydrated equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
 lam_list = [4, 8, 12]
 base_hyd_pdb = pdb_file
 polymer_file = read(base_hyd_pdb)
@@ -1072,7 +1162,7 @@ for i, lam in enumerate(lam_list):
 	hyd_amber = Hyd_AmberParams(polymer, chain_length, num_chains, bulk_creator = hyd_bulk_creator)
 	hyd_amber.create_amber_params()
 	with open(output, 'a') as f:
-		print(f"\tAmber parameters are created for the hydrated bulk phase", file=f)
+		print(f"\tAmber parameters are created for the hydration lambda={lam} bulk phase", file=f)
 
 	for fname in [
 		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop",
@@ -1089,11 +1179,11 @@ for i, lam in enumerate(lam_list):
 	
 	# Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
 	with open(output, 'a') as f:
-		print(f"\tHydrated equilibration MD simulations started", file=f)
+		print(f"\tHydration lambda={lam} equilibration MD simulations started", file=f)
 	hyd_md = Hyd_MDSimulation(nproc, output, amber_params=hyd_amber, use_gpu=use_gpu)
 	hyd_md.run_all_steps()
 	with open(output, 'a') as f:
-		print(f"\tHydrated equilibration MD simulations finished", file=f)
+		print(f"\tHydration lambda={lam} equilibration MD simulations finished", file=f)
 	
 	hyd_prmtop = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop"
 	final_hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.pdb"
@@ -1101,3 +1191,8 @@ for i, lam in enumerate(lam_list):
 
 	shutil.copy(final_hyd_pdb, hyd_eq_dir)
 	os.chdir(hyd_eq_dir)
+
+# Copy necessary files for proton conductivity calculations
+os.chdir(cond_dir)
+
+
