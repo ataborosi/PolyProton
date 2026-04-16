@@ -1,0 +1,13 @@
+# 1.2ns-h3ono3
+ATOM      1 HK   H3O    18       0.405  -1.363   0.426  0.540
+ATOM      2 OK   H3O    18      -0.520  -1.284   0.658 -0.620
+ATOM      3 HK1  H3O    18      -0.834  -0.755  -0.075  0.540
+ATOM      4 HK2  H3O    18      -0.516  -0.598   1.326  0.540
+END
+#liaisons :
+CONNECT    1 HK   2 
+CONNECT    2 OK   1 3 4 
+CONNECT    3 HK   2 
+CONNECT    4 HK   2 
+END
+#Nombre total de liaisons : 3

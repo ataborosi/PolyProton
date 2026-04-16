@@ -1,0 +1,20 @@
+Marc Baaden modified parameters for hydronium ion
+
+MASS
+HK 1.008
+OK 16.
+
+
+BOND
+OK-HK   553.    0.957
+HK-HK   553.    1.514
+
+
+ANGL
+HK-HK-OK        0.      127.74
+HK-OK-HK        100.    104.52
+
+NONBD
+  HK       0.         0.
+  OK       1.7683     0.152
+
