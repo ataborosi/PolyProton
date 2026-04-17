@@ -1071,7 +1071,7 @@ nc_files = [f"dry-eq_1-nvt.nc",
 	f"dry-eq_7-nvt-pr.nc",
 	]
 prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}.prmtop"
-ncrst_file = f"{polymer}_n-{chain_length}x{num_chains}_dry-eq_7-nvt-pr.ncrst"
+ncrst_file = f"dry-eq_7-nvt-pr.ncrst"
 pdb_file = f"{polymer}_n-{chain_length}x{num_chains}_dry-eq_last.pdb"
 merged_pdb=f"{polymer}_n-{chain_length}x{num_chains}_dry-eq.pdb"
 cpptraj_file="cpptraj.in"
@@ -1193,7 +1193,7 @@ for i, lam in enumerate(lam_list):
         f"hyd-eq_5-nvt-pr.nc",
 	]
 	prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop"
-	ncrst_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_5-nvt-pr.ncrst"
+	ncrst_file = f"hyd-eq_5-nvt-pr.ncrst"
 	pdb_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_last.pdb"
 	merged_pdb=f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq.pdb"
 	cpptraj_file="cpptraj.in"
