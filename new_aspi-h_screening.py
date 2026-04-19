@@ -1115,7 +1115,7 @@ num_S = sum(1 for atom in polymer_file if atom.symbol == "S")
 
 for i, lam in enumerate(lam_list):
 	if i > 0:
-		base_hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam_list[i-1]}-h2o.pdb"
+		base_hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam_list[i-1]}-h2o_hyd-eq_last.pdb"
 		polymer_file = read(base_hyd_pdb)
 		cell = polymer_file.cell
 		a, b, c = cell.lengths()
