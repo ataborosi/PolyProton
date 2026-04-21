@@ -1187,10 +1187,10 @@ for i, lam in enumerate(lam_list):
 	
 	 # Perform trajectory files merging and conversion
 	nc_files = [f"hyd-eq_1-nvt.nc",
-        f"hyd-eq_2-nvt.nc",
-        f"hyd-eq_3-nvt.nc", 
-        f"hyd-eq_4-npt.nc",
-        f"hyd-eq_5-nvt-pr.nc",
+		f"hyd-eq_2-nvt.nc",
+		f"hyd-eq_3-nvt.nc", 
+		f"hyd-eq_4-npt.nc",
+		f"hyd-eq_5-nvt-pr.nc",
 	]
 	prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop"
 	ncrst_file = f"hyd-eq_5-nvt-pr.ncrst"
@@ -1280,32 +1280,32 @@ for lam in lam_list:
 	with open(output, 'a') as f:
 		print(f"\tAmber parameters are created for the conductivity lambda={lam} bulk phase", file=f)	 
 	
-    for fname in [
-        f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
-        f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
-        f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",
-        "cond_0-min.in",
-        "cond_pr-nvt.in",
-    ]:
-        shutil.move(fname, os.path.join(lam_cond_md_dir, os.path.basename(fname)))
-    
-    for fname in os.listdir("."):
-        if os.path.isfile(fname) and fname not in[
+	for fname in [
+		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
+		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
+		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",
+		"cond_0-min.in",
+		"cond_pr-nvt.in",
+	]:
+		shutil.move(fname, os.path.join(lam_cond_md_dir, os.path.basename(fname)))
+	
+	for fname in os.listdir("."):
+		if os.path.isfile(fname) and fname not in[
 			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
 			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
-			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",        
-        ]:
-            shutil.move(fname, os.path.join(lam_cond_init_dir, fname))
-    
-    os.chdir(lam_cond_md_dir)
-    
-    with open(output, 'a') as f:
-        print(f"\tConductivity lambda={lam} MD simulations started", file=f)
-        
-    cond_md = Cond_MDSimulation(nproc, output, amber_params=cond_amber, use_gpu=use_gpu)
-    cond_md.run_all_steps()
-    
-    with open(output, 'a') as f:
-        print(f"\tConductivity lambda={lam} MD simulations finished", file=f)
-    
-    os.chdir(base_dir)
+			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",		   
+		]:
+			shutil.move(fname, os.path.join(lam_cond_init_dir, fname))
+	
+	os.chdir(lam_cond_md_dir)
+	
+	with open(output, 'a') as f:
+		print(f"\tConductivity lambda={lam} MD simulations started", file=f)
+		
+	cond_md = Cond_MDSimulation(nproc, output, amber_params=cond_amber, use_gpu=use_gpu)
+	cond_md.run_all_steps()
+	
+	with open(output, 'a') as f:
+		print(f"\tConductivity lambda={lam} MD simulations finished", file=f)
+	
+	os.chdir(base_dir)
