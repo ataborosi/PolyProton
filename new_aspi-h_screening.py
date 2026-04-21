@@ -838,7 +838,7 @@ class Cond_BulkCreator:
 		self.pdb_file = pdb_file
 		
 	def packmol_generate_box(self):
-		with open("packmol_input.in", "w") as f:
+		with open("packmol_input.inp", "w") as f:
 			f.write(f"""
 			tolerance 1.5
 			filetype pdb
@@ -1280,4 +1280,32 @@ for lam in lam_list:
 	with open(output, 'a') as f:
 		print(f"\tAmber parameters are created for the conductivity lambda={lam} bulk phase", file=f)	 
 	
-	
+    for fname in [
+        f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
+        f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
+        f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",
+        "cond_0-min.in",
+        "cond_pr-nvt.in",
+    ]:
+        shutil.move(fname, os.path.join(lam_cond_md_dir, os.path.basename(fname)))
+    
+    for fname in os.listdir("."):
+        if os.path.isfile(fname) and fname not in[
+			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
+			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
+			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",        
+        ]:
+            shutil.move(fname, os.path.join(lam_cond_init_dir, fname))
+    
+    os.chdir(lam_cond_md_dir)
+    
+    with open(output, 'a') as f:
+        print(f"\tConductivity lambda={lam} MD simulations started", file=f)
+        
+    cond_md = Cond_MDSimulation(nproc, output, amber_params=cond_amber, use_gpu=use_gpu)
+    cond_md.run_all_steps()
+    
+    with open(output, 'a') as f:
+        print(f"\tConductivity lambda={lam} MD simulations finished", file=f)
+    
+    os.chdir(base_dir)
