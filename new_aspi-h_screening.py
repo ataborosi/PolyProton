@@ -6,6 +6,7 @@ import shutil
 import glob
 import subprocess
 import getpass
+import random
 
 import ase
 from ase.io import read, write
@@ -34,6 +35,30 @@ output = os.path.join(base_dir, 'new_aspi-h_process_temp.txt')
 def get_nproc(default=4):
 	return int(os.environ.get("SLURM_NTASKS", default))
 
+def select_conformer(conf_file, conf_sel="best", far_fraction=0.5):
+	df = pd.read_csv(conf_file, delim_whitespace=True)
+	best_conf = int(df.iloc[0]["conf_i"])
+	
+	if conf_sel == "best":
+		return best_conf
+	
+	if conf_sel == "random":
+		if len(df) == 1:
+			return best_conf
+		
+		others = df.iloc[1:].copy()
+		
+		if "ΔE" in others.columns and len(others) > 1:
+			others = others.sort_values(by="ΔE", ascending=False).reset_index(drop=True)
+			n_far = max(1, int(math.ceil(len(others) * far_fraction)))
+			far_pool = others.iloc[:n_far]
+		else:
+			far_pool = others
+			
+		return int(random.choice(far_pool["conf_i"].tolist()))
+		
+	raise ValueError("conf_sel must be either 'best' or 'random'")
+			
 class Mol2Modification:
 	def __init__(self, input_mol2, output_mol2=None, remove_atom_types=None):
 		self.input_mol2 = input_mol2
@@ -374,9 +399,9 @@ class GAFF2Param:
 			f.write('quit\n')
 		subprocess.run(f'tleap -f {leap_input_filename} > {leap_output_filename}', shell=True, check=True)
 	
-	def parameterization(self):
-		read_xyz_1 = read(f'{self.polymer}_0_opt.xyz')
-		xyz_file_1 = f'{self.polymer}_0_opt.xyz'
+	def parameterization(self, selected_conf):
+		read_xyz_1 = read(f'{self.polymer}_{selected_conf}_opt.xyz')
+		xyz_file_1 = f'{self.polymer}_{selected_conf}_opt.xyz'
 		file_name_1 = f"{self.polymer}"
 		mod_file_name_1 = f"{self.polymer}_mod"
 		charge_1 = 0
@@ -387,11 +412,11 @@ class GAFF2Param:
 		self.modify_mol2_file(file_name_1, mod_file_name_1)
 		self.run_antechamber_v1()
 		self.create_polymer_chain()
-		xyz_file_2 = f'{self.polymer}_0_opt_so3.xyz'
+		xyz_file_2 = f'{self.polymer}_{selected_conf}_opt_so3.xyz'
 		charge_2 = -2
 		mult_2 = 1
 		self.remove_atoms(xyz_file_1, xyz_file_2)
-		read_xyz_2 = read(f'{self.polymer}_0_opt_so3.xyz')
+		read_xyz_2 = read(f'{self.polymer}_{selected_conf}_opt_so3.xyz')
 		file_name_2 = f"{self.polymer}_so3"
 		mol_file_name_1 = f"{self.polymer}_gaff2.mol2"
 		mol_file_name_2 = f"{self.polymer}_so3.mol2"
@@ -983,7 +1008,8 @@ os.chdir(init_dir)
 backbone_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
 sidechain_smiles="OCCCS(O)(=O)=O"
 benzene_smiles="C1=CC=CC=C1"
-conf_num = 2
+conf_num = 5
+conf_selection = "best" #best or random
 conf_output_file = f"{polymer}_conf.txt"
 temperature = 300
 chain_length = 15
@@ -1008,304 +1034,308 @@ conformation_analysis.optimize_confomer()
 with open(output, 'a') as f:
 	print(f"\tConformation analysis finished", file=f)
 
-# Performing the evaluation of conformers based on their total energies and Boltzmann distribution
+# Performing the evaluation of conformers based on their total energies and Boltzmann distribution, selection of conformer
 analyzer = ConformationAnalyzer(polymer, conf_num, conf_output_file, temperature)
 analyzer.analyze_conformers()	
 with open(output, 'a') as f:
 	print(f"\tEvaluation of conformers finished", file=f)
 
+selected_conf = select_conformer(conf_output_file, conf_selection)
+with open(output, 'a') as f:
+	print(f"\tSelected conformer mode = {conf_selection}, conf_i = {selected_conf}", file=f)
+
 # Creating GAFF2 parameters for the monomer unit and creating specfic chain length single polymer 
 param = GAFF2Param(polymer, chain_length, nproc)
-param.parameterization()
+param.parameterization(selected_conf)
 with open(output, 'a') as f:
 	print(f"\tGAFF2 parameters and single polymer chain creation finished", file=f)
 
 # Align the single polymer chain, define the box dimension based on the polymer chain, and create the bulk phase
-dry_bulk_creator = Dry_BulkCreator(polymer, chain_length, num_chains)
-dry_bulk_creator.create_bulk_phase()
-with open(output, 'a') as f:
-	print(f"\tAlignment of single polymer chain and bulk phase creation finished", file=f)
-	
-# Create amber parameters
-dry_amber = Dry_AmberParams(polymer, chain_length, num_chains, bulk_creator = dry_bulk_creator)
-dry_amber.create_amber_params()
-with open(output, 'a') as f:
-	print(f"\tAmber parameters are created for the bulk phase", file=f)
-
-# Create a working directory for dry equilibration simulations and copy necessary files	
-os.chdir(dry_eq_dir)
-
-for params in [
-	f"{polymer}_n-{chain_length}x{num_chains}.prmtop",
-	f"{polymer}_n-{chain_length}x{num_chains}.inpcrd",
-]:
-	shutil.copy(os.path.join(init_dir, params), dry_eq_dir)
-
-for inputs in [
-	"dry-eq_0-min.in",
-	"dry-eq_1-nvt.in",
-	"dry-eq_2-npt.in",
-	"dry-eq_3-nvt.in",
-	"dry-eq_4-npt.in",
-	"dry-eq_5-nvt.in",
-	"dry-eq_6-npt.in",
-	"dry-eq_7-nvt-pr.in",
-]:
-	shutil.copy(os.path.join(input_dir, inputs), dry_eq_dir)
-
-# Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
-with open(output, 'a') as f:
-	print(f"\tDry equilibration MD simulations started", file=f)
-dry_md = Dry_MDSimulation(nproc, output, amber_params=dry_amber, use_gpu=use_gpu)
-dry_md.run_all_steps()
-with open(output, 'a') as f:
-	print(f"\tDry equilibration MD simulations finished", file=f)
-
-# Perform trajectory files merging and conversion
-nc_files = [f"dry-eq_1-nvt.nc",
-	f"dry-eq_2-npt.nc",
-	f"dry-eq_3-nvt.nc", 
-	f"dry-eq_4-npt.nc",
-	f"dry-eq_5-nvt.nc",
-	f"dry-eq_6-npt.nc",
-	f"dry-eq_7-nvt-pr.nc",
-	]
-prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}.prmtop"
-ncrst_file = f"dry-eq_7-nvt-pr.ncrst"
-pdb_file = f"{polymer}_n-{chain_length}x{num_chains}_dry-eq_last.pdb"
-merged_pdb=f"{polymer}_n-{chain_length}x{num_chains}_dry-eq.pdb"
-cpptraj_file="cpptraj.in"
-prefix=f"dry-eq_tmp"
-dry_md_analysis = Analysis()
-dry_md_analysis.merge_nc_files(prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file)
-
-with open(output, 'a') as f:
-	print(f"\tDry equilibration trajectory merging finished", file=f)
-
-# Copy necessary files for hydrate equilibration
-os.chdir(hyd_eq_dir)
-
-shutil.copy(os.path.join(dry_eq_dir, pdb_file), hyd_eq_dir)
-shutil.copy(os.path.join(input_dir, "h2o.pdb"), hyd_eq_dir)
-
-for params in [
-	"h.prepi",
-	"t.prepi",
-	f"{polymer}_m.prepi",
-	f"{polymer}_gaff2.frcmod",
-]:
-	shutil.copy(os.path.join(init_dir, params), hyd_eq_dir)
-for inputs in [
-	"hyd-eq_0-min.in",
-	"hyd-eq_1-nvt.in",
-	"hyd-eq_2-nvt.in",
-	"hyd-eq_3-nvt.in",
-	"hyd-eq_4-npt.in",
-	"hyd-eq_5-nvt-pr.in",
-]:
-	shutil.copy(os.path.join(input_dir, inputs), hyd_eq_dir)
-
-# Run the hydrated equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
-lam_list = [4, 8, 12]
-base_hyd_pdb = pdb_file
-polymer_file = read(base_hyd_pdb)
-cell = polymer_file.cell
-a, b, c = cell.lengths()
-num_S = sum(1 for atom in polymer_file if atom.symbol == "S")
-
-for i, lam in enumerate(lam_list):
-	if i > 0:
-		base_hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam_list[i-1]}-h2o_hyd-eq_last.pdb"
-		polymer_file = read(base_hyd_pdb)
-		cell = polymer_file.cell
-		a, b, c = cell.lengths()
-	
-	num_h2o = lam * num_S
-	
-	lam_dir = os.path.join(hyd_eq_dir, f"{lam}_h2o")
-	lam_init_dir = os.path.join(lam_dir, "init")
-	lam_md_dir = os.path.join(lam_dir, "md")
-	
-	os.makedirs(lam_dir, exist_ok=True)
-	os.makedirs(lam_init_dir, exist_ok=True)
-	os.makedirs(lam_md_dir, exist_ok=True)
-	
-	for fname in [
-		"h.prepi",
-		"t.prepi",
-		f"{polymer}_m.prepi",
-		f"{polymer}_gaff2.frcmod",
-		"h2o.pdb",
-		base_hyd_pdb,
-	]:
-		shutil.copy(os.path.join(hyd_eq_dir, fname), lam_dir)
-	
-	for fname in [
-		"hyd-eq_0-min.in",
-		"hyd-eq_1-nvt.in",
-		"hyd-eq_2-nvt.in",
-		"hyd-eq_3-nvt.in",
-		"hyd-eq_4-npt.in",
-		"hyd-eq_5-nvt-pr.in",
-	]:
-		shutil.copy(os.path.join(hyd_eq_dir, fname), lam_md_dir)
-
-	os.chdir(lam_dir) 
-
-	# Create the bulk phase for specific hydration level (lambda)
-	hyd_bulk_creator = Hyd_BulkCreator(polymer, chain_length, num_chains, a, b, c, num_h2o, lam, base_hyd_pdb)
-	hyd_bulk_creator.create_bulk_phase()
-	with open(output, 'a') as f:
-		print(f"\tHydration lambda={lam} bulk phase creation finished", file=f)
-
-	# Create amber parameters for specific hydration level (lambda)
-	hyd_amber = Hyd_AmberParams(polymer, chain_length, num_chains, bulk_creator = hyd_bulk_creator)
-	hyd_amber.create_amber_params()
-	with open(output, 'a') as f:
-		print(f"\tAmber parameters are created for the hydration lambda={lam} bulk phase", file=f)
-
-	for fname in [
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop",
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.inpcrd",
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_amber.pdb",	   
-	]:
-		shutil.move(fname, os.path.join(lam_md_dir, os.path.basename(fname)))
-	
-	for fname in os.listdir("."):
-		if os.path.isfile(fname) and not fname.endswith((".prmtop", ".inpcrd", ".pdb")):
-			shutil.move(fname, os.path.join(lam_init_dir, fname))
-	
-	os.chdir(lam_md_dir)
-	
-	# Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
-	with open(output, 'a') as f:
-		print(f"\tHydration lambda={lam} equilibration MD simulations started", file=f)
-	hyd_md = Hyd_MDSimulation(nproc, output, amber_params=hyd_amber, use_gpu=use_gpu)
-	hyd_md.run_all_steps()
-	with open(output, 'a') as f:
-		print(f"\tHydration lambda={lam} equilibration MD simulations finished", file=f)
-	
-	 # Perform trajectory files merging and conversion
-	nc_files = [f"hyd-eq_1-nvt.nc",
-		f"hyd-eq_2-nvt.nc",
-		f"hyd-eq_3-nvt.nc", 
-		f"hyd-eq_4-npt.nc",
-		f"hyd-eq_5-nvt-pr.nc",
-	]
-	prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop"
-	ncrst_file = f"hyd-eq_5-nvt-pr.ncrst"
-	pdb_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_last.pdb"
-	merged_pdb=f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq.pdb"
-	cpptraj_file="cpptraj.in"
-	prefix=f"hdy-eq_tmp"
-	hyd_md_analysis = Analysis()
-	hyd_md_analysis.merge_nc_files(prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file)
-
-	shutil.copy(pdb_file, hyd_eq_dir)
-	os.chdir(hyd_eq_dir)
-
-# Copy necessary files for proton conductivity calculations
-os.chdir(cond_dir)
-
-for h3o_files in [
-	"h3o.pdb",
-	"h3o.frcmod",
-	"h3o.prepi", 
-]:
-	shutil.copy(os.path.join(input_dir, h3o_files), cond_dir)
-
-for fname in [
-	"cond_0-min.in",
-	"cond_pr-nvt.in",
-]:
-	shutil.copy(os.path.join(input_dir, fname), cond_dir)
-
-for params in [
-	"h_so3.prepi",
-	"t_so3.prepi",
-	f"{polymer}_m_so3.prepi",
-	f"{polymer}_so3_gaff2.frcmod",
-]:
-	shutil.copy(os.path.join(init_dir, params), cond_dir)
-
-# Run the proton conduction MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
-
-for lam in lam_list:	 
-	lam_cond_dir = os.path.join(cond_dir, f"{lam}_h3o-h2o")
-	lam_cond_init_dir = os.path.join(lam_cond_dir, "init")
-	lam_cond_md_dir = os.path.join(lam_cond_dir, "md")
-	
-	os.makedirs(lam_cond_dir, exist_ok=True)
-	os.makedirs(lam_cond_init_dir, exist_ok=True)
-	os.makedirs(lam_cond_md_dir, exist_ok=True)
-	
-	hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_last.pdb"
-	shutil.copy(os.path.join(hyd_eq_dir, hyd_pdb), lam_cond_dir)
-	
-	for fname in [
-		"h_so3.prepi",
-		"t_so3.prepi",
-		f"{polymer}_m_so3.prepi",
-		f"{polymer}_so3_gaff2.frcmod",
-		"h3o.pdb",
-		"h3o.frcmod",
-		"h3o.prepi", 
-		"cond_0-min.in",
-		"cond_pr-nvt.in"
-	]:
-		shutil.copy(os.path.join(cond_dir, fname), lam_cond_dir)
-	
-	os.chdir(lam_cond_dir)
-	hyd_pdb_file = read(hyd_pdb)
-	cell = hyd_pdb_file.cell
-	a, b, c = cell.lengths()
-	hyd_clean_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_clean.pdb"
-	
-	cleaner = PDBCleaner(hyd_pdb, hyd_clean_pdb, chain_length)
-	cleaner.remove_so3h_hydrogens()
-	num_h3o = cleaner.hydrogens_removed_count
-	
-	with open(output, 'a') as f:
-		print(f"\tConductivity lambda={lam} removed SO3H hydrogens = {num_h3o} and H2O molecule = {num_h3o}", file=f)
-	
-	cond_bulk_creator = Cond_BulkCreator(polymer, chain_length, num_chains, a, b, c, num_h3o, lam, hyd_clean_pdb)
-	cond_bulk_creator.create_bulk_phase()
-	
-	with open(output, 'a') as f:
-		print(f"\tConductivity lambda={lam} bulk phase creation finished", file=f)
-	
-	cond_amber = Cond_AmberParams(polymer, chain_length, num_chains, bulk_creator=cond_bulk_creator)
-	cond_amber.create_amber_params()
-	
-	with open(output, 'a') as f:
-		print(f"\tAmber parameters are created for the conductivity lambda={lam} bulk phase", file=f)	 
-	
-	for fname in [
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",
-		"cond_0-min.in",
-		"cond_pr-nvt.in",
-	]:
-		shutil.move(fname, os.path.join(lam_cond_md_dir, os.path.basename(fname)))
-	
-	for fname in os.listdir("."):
-		if os.path.isfile(fname) and fname not in[
-			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
-			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
-			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",		   
-		]:
-			shutil.move(fname, os.path.join(lam_cond_init_dir, fname))
-	
-	os.chdir(lam_cond_md_dir)
-	
-	with open(output, 'a') as f:
-		print(f"\tConductivity lambda={lam} MD simulations started", file=f)
-		
-	cond_md = Cond_MDSimulation(nproc, output, amber_params=cond_amber, use_gpu=use_gpu)
-	cond_md.run_all_steps()
-	
-	with open(output, 'a') as f:
-		print(f"\tConductivity lambda={lam} MD simulations finished", file=f)
-	
-	os.chdir(base_dir)
+#dry_bulk_creator = Dry_BulkCreator(polymer, chain_length, num_chains)
+#dry_bulk_creator.create_bulk_phase()
+#with open(output, 'a') as f:
+#	print(f"\tAlignment of single polymer chain and bulk phase creation finished", file=f)
+#	
+## Create amber parameters
+#dry_amber = Dry_AmberParams(polymer, chain_length, num_chains, bulk_creator = dry_bulk_creator)
+#dry_amber.create_amber_params()
+#with open(output, 'a') as f:
+#	print(f"\tAmber parameters are created for the bulk phase", file=f)
+#
+## Create a working directory for dry equilibration simulations and copy necessary files	
+#os.chdir(dry_eq_dir)
+#
+#for params in [
+#	f"{polymer}_n-{chain_length}x{num_chains}.prmtop",
+#	f"{polymer}_n-{chain_length}x{num_chains}.inpcrd",
+#]:
+#	shutil.copy(os.path.join(init_dir, params), dry_eq_dir)
+#
+#for inputs in [
+#	"dry-eq_0-min.in",
+#	"dry-eq_1-nvt.in",
+#	"dry-eq_2-npt.in",
+#	"dry-eq_3-nvt.in",
+#	"dry-eq_4-npt.in",
+#	"dry-eq_5-nvt.in",
+#	"dry-eq_6-npt.in",
+#	"dry-eq_7-nvt-pr.in",
+#]:
+#	shutil.copy(os.path.join(input_dir, inputs), dry_eq_dir)
+#
+## Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
+#with open(output, 'a') as f:
+#	print(f"\tDry equilibration MD simulations started", file=f)
+#dry_md = Dry_MDSimulation(nproc, output, amber_params=dry_amber, use_gpu=use_gpu)
+#dry_md.run_all_steps()
+#with open(output, 'a') as f:
+#	print(f"\tDry equilibration MD simulations finished", file=f)
+#
+## Perform trajectory files merging and conversion
+#nc_files = [f"dry-eq_1-nvt.nc",
+#	f"dry-eq_2-npt.nc",
+#	f"dry-eq_3-nvt.nc", 
+#	f"dry-eq_4-npt.nc",
+#	f"dry-eq_5-nvt.nc",
+#	f"dry-eq_6-npt.nc",
+#	f"dry-eq_7-nvt-pr.nc",
+#	]
+#prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}.prmtop"
+#ncrst_file = f"dry-eq_7-nvt-pr.ncrst"
+#pdb_file = f"{polymer}_n-{chain_length}x{num_chains}_dry-eq_last.pdb"
+#merged_pdb=f"{polymer}_n-{chain_length}x{num_chains}_dry-eq.pdb"
+#cpptraj_file="cpptraj.in"
+#prefix=f"dry-eq_tmp"
+#dry_md_analysis = Analysis()
+#dry_md_analysis.merge_nc_files(prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file)
+#
+#with open(output, 'a') as f:
+#	print(f"\tDry equilibration trajectory merging finished", file=f)
+#
+## Copy necessary files for hydrate equilibration
+#os.chdir(hyd_eq_dir)
+#
+#shutil.copy(os.path.join(dry_eq_dir, pdb_file), hyd_eq_dir)
+#shutil.copy(os.path.join(input_dir, "h2o.pdb"), hyd_eq_dir)
+#
+#for params in [
+#	"h.prepi",
+#	"t.prepi",
+#	f"{polymer}_m.prepi",
+#	f"{polymer}_gaff2.frcmod",
+#]:
+#	shutil.copy(os.path.join(init_dir, params), hyd_eq_dir)
+#for inputs in [
+#	"hyd-eq_0-min.in",
+#	"hyd-eq_1-nvt.in",
+#	"hyd-eq_2-nvt.in",
+#	"hyd-eq_3-nvt.in",
+#	"hyd-eq_4-npt.in",
+#	"hyd-eq_5-nvt-pr.in",
+#]:
+#	shutil.copy(os.path.join(input_dir, inputs), hyd_eq_dir)
+#
+## Run the hydrated equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
+#lam_list = [4, 8, 12]
+#base_hyd_pdb = pdb_file
+#polymer_file = read(base_hyd_pdb)
+#cell = polymer_file.cell
+#a, b, c = cell.lengths()
+#num_S = sum(1 for atom in polymer_file if atom.symbol == "S")
+#
+#for i, lam in enumerate(lam_list):
+#	if i > 0:
+#		base_hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam_list[i-1]}-h2o_hyd-eq_last.pdb"
+#		polymer_file = read(base_hyd_pdb)
+#		cell = polymer_file.cell
+#		a, b, c = cell.lengths()
+#	
+#	num_h2o = lam * num_S
+#	
+#	lam_dir = os.path.join(hyd_eq_dir, f"{lam}_h2o")
+#	lam_init_dir = os.path.join(lam_dir, "init")
+#	lam_md_dir = os.path.join(lam_dir, "md")
+#	
+#	os.makedirs(lam_dir, exist_ok=True)
+#	os.makedirs(lam_init_dir, exist_ok=True)
+#	os.makedirs(lam_md_dir, exist_ok=True)
+#	
+#	for fname in [
+#		"h.prepi",
+#		"t.prepi",
+#		f"{polymer}_m.prepi",
+#		f"{polymer}_gaff2.frcmod",
+#		"h2o.pdb",
+#		base_hyd_pdb,
+#	]:
+#		shutil.copy(os.path.join(hyd_eq_dir, fname), lam_dir)
+#	
+#	for fname in [
+#		"hyd-eq_0-min.in",
+#		"hyd-eq_1-nvt.in",
+#		"hyd-eq_2-nvt.in",
+#		"hyd-eq_3-nvt.in",
+#		"hyd-eq_4-npt.in",
+#		"hyd-eq_5-nvt-pr.in",
+#	]:
+#		shutil.copy(os.path.join(hyd_eq_dir, fname), lam_md_dir)
+#
+#	os.chdir(lam_dir) 
+#
+#	# Create the bulk phase for specific hydration level (lambda)
+#	hyd_bulk_creator = Hyd_BulkCreator(polymer, chain_length, num_chains, a, b, c, num_h2o, lam, base_hyd_pdb)
+#	hyd_bulk_creator.create_bulk_phase()
+#	with open(output, 'a') as f:
+#		print(f"\tHydration lambda={lam} bulk phase creation finished", file=f)
+#
+#	# Create amber parameters for specific hydration level (lambda)
+#	hyd_amber = Hyd_AmberParams(polymer, chain_length, num_chains, bulk_creator = hyd_bulk_creator)
+#	hyd_amber.create_amber_params()
+#	with open(output, 'a') as f:
+#		print(f"\tAmber parameters are created for the hydration lambda={lam} bulk phase", file=f)
+#
+#	for fname in [
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop",
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.inpcrd",
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_amber.pdb",	   
+#	]:
+#		shutil.move(fname, os.path.join(lam_md_dir, os.path.basename(fname)))
+#	
+#	for fname in os.listdir("."):
+#		if os.path.isfile(fname) and not fname.endswith((".prmtop", ".inpcrd", ".pdb")):
+#			shutil.move(fname, os.path.join(lam_init_dir, fname))
+#	
+#	os.chdir(lam_md_dir)
+#	
+#	# Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
+#	with open(output, 'a') as f:
+#		print(f"\tHydration lambda={lam} equilibration MD simulations started", file=f)
+#	hyd_md = Hyd_MDSimulation(nproc, output, amber_params=hyd_amber, use_gpu=use_gpu)
+#	hyd_md.run_all_steps()
+#	with open(output, 'a') as f:
+#		print(f"\tHydration lambda={lam} equilibration MD simulations finished", file=f)
+#	
+#	 # Perform trajectory files merging and conversion
+#	nc_files = [f"hyd-eq_1-nvt.nc",
+#		f"hyd-eq_2-nvt.nc",
+#		f"hyd-eq_3-nvt.nc", 
+#		f"hyd-eq_4-npt.nc",
+#		f"hyd-eq_5-nvt-pr.nc",
+#	]
+#	prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop"
+#	ncrst_file = f"hyd-eq_5-nvt-pr.ncrst"
+#	pdb_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_last.pdb"
+#	merged_pdb=f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq.pdb"
+#	cpptraj_file="cpptraj.in"
+#	prefix=f"hdy-eq_tmp"
+#	hyd_md_analysis = Analysis()
+#	hyd_md_analysis.merge_nc_files(prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file)
+#
+#	shutil.copy(pdb_file, hyd_eq_dir)
+#	os.chdir(hyd_eq_dir)
+#
+## Copy necessary files for proton conductivity calculations
+#os.chdir(cond_dir)
+#
+#for h3o_files in [
+#	"h3o.pdb",
+#	"h3o.frcmod",
+#	"h3o.prepi", 
+#]:
+#	shutil.copy(os.path.join(input_dir, h3o_files), cond_dir)
+#
+#for fname in [
+#	"cond_0-min.in",
+#	"cond_pr-nvt.in",
+#]:
+#	shutil.copy(os.path.join(input_dir, fname), cond_dir)
+#
+#for params in [
+#	"h_so3.prepi",
+#	"t_so3.prepi",
+#	f"{polymer}_m_so3.prepi",
+#	f"{polymer}_so3_gaff2.frcmod",
+#]:
+#	shutil.copy(os.path.join(init_dir, params), cond_dir)
+#
+## Run the proton conduction MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
+#
+#for lam in lam_list:	 
+#	lam_cond_dir = os.path.join(cond_dir, f"{lam}_h3o-h2o")
+#	lam_cond_init_dir = os.path.join(lam_cond_dir, "init")
+#	lam_cond_md_dir = os.path.join(lam_cond_dir, "md")
+#	
+#	os.makedirs(lam_cond_dir, exist_ok=True)
+#	os.makedirs(lam_cond_init_dir, exist_ok=True)
+#	os.makedirs(lam_cond_md_dir, exist_ok=True)
+#	
+#	hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_last.pdb"
+#	shutil.copy(os.path.join(hyd_eq_dir, hyd_pdb), lam_cond_dir)
+#	
+#	for fname in [
+#		"h_so3.prepi",
+#		"t_so3.prepi",
+#		f"{polymer}_m_so3.prepi",
+#		f"{polymer}_so3_gaff2.frcmod",
+#		"h3o.pdb",
+#		"h3o.frcmod",
+#		"h3o.prepi", 
+#		"cond_0-min.in",
+#		"cond_pr-nvt.in"
+#	]:
+#		shutil.copy(os.path.join(cond_dir, fname), lam_cond_dir)
+#	
+#	os.chdir(lam_cond_dir)
+#	hyd_pdb_file = read(hyd_pdb)
+#	cell = hyd_pdb_file.cell
+#	a, b, c = cell.lengths()
+#	hyd_clean_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_clean.pdb"
+#	
+#	cleaner = PDBCleaner(hyd_pdb, hyd_clean_pdb, chain_length)
+#	cleaner.remove_so3h_hydrogens()
+#	num_h3o = cleaner.hydrogens_removed_count
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tConductivity lambda={lam} removed SO3H hydrogens = {num_h3o} and H2O molecule = {num_h3o}", file=f)
+#	
+#	cond_bulk_creator = Cond_BulkCreator(polymer, chain_length, num_chains, a, b, c, num_h3o, lam, hyd_clean_pdb)
+#	cond_bulk_creator.create_bulk_phase()
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tConductivity lambda={lam} bulk phase creation finished", file=f)
+#	
+#	cond_amber = Cond_AmberParams(polymer, chain_length, num_chains, bulk_creator=cond_bulk_creator)
+#	cond_amber.create_amber_params()
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tAmber parameters are created for the conductivity lambda={lam} bulk phase", file=f)	 
+#	
+#	for fname in [
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",
+#		"cond_0-min.in",
+#		"cond_pr-nvt.in",
+#	]:
+#		shutil.move(fname, os.path.join(lam_cond_md_dir, os.path.basename(fname)))
+#	
+#	for fname in os.listdir("."):
+#		if os.path.isfile(fname) and fname not in[
+#			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
+#			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
+#			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",		   
+#		]:
+#			shutil.move(fname, os.path.join(lam_cond_init_dir, fname))
+#	
+#	os.chdir(lam_cond_md_dir)
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tConductivity lambda={lam} MD simulations started", file=f)
+#		
+#	cond_md = Cond_MDSimulation(nproc, output, amber_params=cond_amber, use_gpu=use_gpu)
+#	cond_md.run_all_steps()
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tConductivity lambda={lam} MD simulations finished", file=f)
+#	
+#	os.chdir(base_dir)
