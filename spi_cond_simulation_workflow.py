@@ -32,7 +32,7 @@ from ase.calculators.orca import OrcaProfile
 profile = OrcaProfile(command='/opt/orca/orca')
 
 base_dir = os.getcwd()
-output = os.path.join(base_dir, 'new_aspi-h_process_temp.txt')
+output = os.path.join(base_dir, 'spi_cond_simulation_workflow_process.txt')
 
 def get_nproc(default=4):
 	return int(os.environ.get("SLURM_NTASKS", default))
@@ -62,7 +62,7 @@ def select_conformer(conf_file, conf_sel="best", far_fraction=0.5):
 	raise ValueError("conf_sel must be either 'best' or 'random'")
 
 def generate_chain_lengths(chain_length, num_chains, mix_chains=False, seed=42):
-	if not mix-chains:
+	if not mix_chains:
 		return [int(chain_length)] * int(num_chains)
 	
 	half_range = int(math.ceil(chain_length / 2))
@@ -72,7 +72,7 @@ def generate_chain_lengths(chain_length, num_chains, mix_chains=False, seed=42):
 	random.seed(seed)
 	return [random.randint(min_len, max_len) for _ in range(num_chains)]
 
-def system_name(polymer, chain_length, num_chains, mix_chains=False)
+def system_name(polymer, chain_length, num_chains, mix_chains=False):
 	if mix_chains:
 		return f"{polymer}_mix-n-{chain_length}x{num_chains}"
 	return f"{polymer}_n-{chain_length}x{num_chains}"
@@ -448,7 +448,7 @@ class GAFF2Param:
 		self.convert_xyz_to_mol2(xyz_file_1, file_name_1)
 		self.modify_mol2_file(file_name_1, mod_file_name_1)
 		self.run_antechamber_v1()
-		self.create_polymer_chain()
+		self.create_polymer_chain(self.chain_length)
 		xyz_file_2 = f'{self.polymer}_{selected_conf}_opt_so3.xyz'
 		charge_2 = -2
 		mult_2 = 1
@@ -577,34 +577,34 @@ class Dry_BulkCreator:
 		self.box_size_y = np.sqrt(box_side_area) * scale_factor
 		self.box_size_z = box_height
 
-    def packmol_generate_box(self):
-        with open("packmol_input.inp", "w") as f:
-            f.write("tolerance 2.0\n")
-            f.write("filetype pdb\n")
-            f.write("add_amber_ter\n")
-            f.write(f"output {self.output_pdb}\n")
-    
-            if not self.mix_chains:
-                f.write(f"structure {self.rotated_single_chain}\n")
-                f.write(f"number {self.num_chains}\n")
-                f.write(f"inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}\n")
-                if self.aligned:
-                    f.write("constrain_rotation x 0. 0.\n")
-                    f.write("constrain_rotation y 0. 0.\n")
-                    f.write("constrain_rotation z 0. 0.\n")
-                f.write("end structure\n")
-            else:
-                for L, rotated_pdb in zip(self.unique_lengths, self.rotated_pdbs):
-                    f.write(f"structure {rotated_pdb}\n")
-                    f.write(f"number {self.length_counts[L]}\n")
-                    f.write(f"inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}\n")
-                    if self.aligned:
-                        f.write("constrain_rotation x 0. 0.\n")
-                        f.write("constrain_rotation y 0. 0.\n")
-                        f.write("constrain_rotation z 0. 0.\n")
-                    f.write("end structure\n")
-    
-        subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True, check=True)
+	def packmol_generate_box(self):
+		with open("packmol_input.inp", "w") as f:
+			f.write("tolerance 2.0\n")
+			f.write("filetype pdb\n")
+			f.write("add_amber_ter\n")
+			f.write(f"output {self.output_pdb}\n")
+	
+			if not self.mix_chains:
+				f.write(f"structure {self.rotated_single_chain}\n")
+				f.write(f"number {self.num_chains}\n")
+				f.write(f"inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}\n")
+				if self.aligned:
+					f.write("constrain_rotation x 0. 0.\n")
+					f.write("constrain_rotation y 0. 0.\n")
+					f.write("constrain_rotation z 0. 0.\n")
+				f.write("end structure\n")
+			else:
+				for L, rotated_pdb in zip(self.unique_lengths, self.rotated_pdbs):
+					f.write(f"structure {rotated_pdb}\n")
+					f.write(f"number {self.length_counts[L]}\n")
+					f.write(f"inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}\n")
+					if self.aligned:
+						f.write("constrain_rotation x 0. 0.\n")
+						f.write("constrain_rotation y 0. 0.\n")
+						f.write("constrain_rotation z 0. 0.\n")
+					f.write("end structure\n")
+	
+		subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True, check=True)
 #		subprocess.run('packmol < packmol_input.inp', shell=True)
 	
 	def create_bulk_phase(self):
