@@ -76,12 +76,23 @@ def system_name(polymer, chain_length, num_chains, mix_chains=False)
 	if mix_chains:
 		return f"{polymer}_mix-n-{chain_length}x{num_chains}"
 	return f"{polymer}_n-{chain_length}x{num_chains}"
+
+def format_leap_sequence(sequence, residues_per_line=20):
+	lines = []
+	lines.append("{")
+
+	for i in range(0, len(sequence), residues_per_line):
+		chunk = sequence[i:i + residues_per_line]
+		lines.append("	  " + " ".join(chunk))
+
+	lines.append("}")
+	return "\n".join(lines)
 			
 class Mol2Modification:
 	def __init__(self, input_mol2, output_mol2=None, remove_atom_types=None):
 		self.input_mol2 = input_mol2
-		self.output_mol2 = output_mol2
-		self.remove_atom_types = remove_atom_types
+		self.output_mol2 = output_mol2 if output_mol2 else input_mol2.replace(".mol2", "_mod.mol2")
+		self.remove_atom_types = set(t.lower() for t in (remove_atom_types if remove_atom_types else ["ho"]))
 	
 	def split_sections(self, lines):
 		sections = {}
@@ -404,16 +415,13 @@ class GAFF2Param:
 			chain_length = self.chain_length
 		
 		sequence = ['H']
-		chain = self.chain_length - 2
-		sequence.extend([f'{self.polymer}'] * chain)
-		original_sequence = sequence + ['T']
-		sequence = original_sequence.copy()
-		middle_sequence = sequence[1:-1]
-		sequence = ['H'] + middle_sequence + ['T']
+		num_middle_units = chain_length - 2
+		sequence.extend([f'{self.polymer}'] * num_middle_units)
+		sequence.append('T')
+
 		formatted_sequence = '{' + ' '.join(sequence) + '}'
-		
-		leap_input_filename = f'leap_input.in'
-		leap_output_filename = f'leap_input.out'
+		leap_input_filename = f'leap_input_n-{current_chain_length}.in'
+		leap_output_filename = f'leap_input_n-{current_chain_length}.out'
 		
 		with open(leap_input_filename, 'w') as f:
 			f.write('source leaprc.gaff2\n')
@@ -459,16 +467,17 @@ class GAFF2Param:
 		self.run_antechamber_v2()
 
 class Dry_BulkCreator:
-	def __init__(self, polymer, chain_length, num_chains, mix_chains=False, chain_lengths=None):
+	def __init__(self, polymer, chain_length, num_chains, mix_chains=False, chain_lengths=None, aligned=True):
 		self.polymer = polymer
 		self.chain_length = chain_length
 		self.num_chains = num_chains
 		self.mix_chains = mix_chains
 		self.chain_lengths = chain_lengths if chain_lengths else [chain_length] * num_chains
+		self.aligned = aligned
 		self.box_size_x = 0
 		self.box_size_y = 0
 		self.box_size_z = 0
-        self.output_pdb = f"{system_name(self.polymer, self.chain_length, self.num_chains, self.mix_chains)}.pdb"
+		self.output_pdb = f"{system_name(self.polymer, self.chain_length, self.num_chains, self.mix_chains)}.pdb"
 		
 	def rotate_chain(self, input_pdb, output_pdb):
 		parser = PDBParser(QUIET=True)
@@ -534,8 +543,12 @@ class Dry_BulkCreator:
 			box_height = dim_z + 30
 			box_side_area = total_box_volume / box_height
 
-			scale_factor = 1.65 - 0.3 * np.log2(1 + (dim_x + dim_y) / 10)
-			scale_factor = max(0.5, min(1.5, scale_factor))
+			if self.aligned:
+				scale_factor = 1.65 - 0.3 * np.log2(1 + (dim_x + dim_y) / 10)
+				scale_factor = max(0.5, min(1.5, scale_factor))
+			else:
+				scale_factor = 3.0 - 0.3 * np.log2(1 + (dim_x + dim_y) / 10)
+				scale_factor = max(0.5, min(3.5, scale_factor))
 
 			self.box_size_x = np.sqrt(box_side_area) * scale_factor
 			self.box_size_y = np.sqrt(box_side_area) * scale_factor
@@ -553,39 +566,45 @@ class Dry_BulkCreator:
 		box_height = max_dim_z + 30.0
 		box_side_area = total_box_volume / box_height
 
-		scale_factor = 1.65 - 0.3 * np.log2(1 + (avg_dim_x + avg_dim_y) / 10)
-		scale_factor = max(0.5, min(1.5, scale_factor))
+		if self.aligned:
+			scale_factor = 1.65 - 0.3 * np.log2(1 + (dim_x + dim_y) / 10)
+			scale_factor = max(0.5, min(1.5, scale_factor))
+		else:
+			scale_factor = 3.0 - 0.3 * np.log2(1 + (dim_x + dim_y) / 10)
+			scale_factor = max(0.5, min(3.5, scale_factor))
 
 		self.box_size_x = np.sqrt(box_side_area) * scale_factor
 		self.box_size_y = np.sqrt(box_side_area) * scale_factor
 		self.box_size_z = box_height
 
-	def packmol_generate_box(self):
-		with open("packmol_input.inp", "w") as f:
-			f.write("tolerance 2.0\n")
-			f.write("filetype pdb\n")
-			f.write("add_amber_ter\n")
-			f.write(f"output {self.output_pdb}\n")
-
-			if not self.mix_chains:
-				f.write(f"structure {self.rotated_single_chain}\n")
-				f.write(f"number {self.num_chains}\n")
-				f.write(f"inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}\n")
-				f.write("constrain_rotation x 0. 0.\n")
-				f.write("constrain_rotation y 0. 0.\n")
-				f.write("constrain_rotation z 0. 0.\n")
-				f.write("end structure\n")
-			else:
-				for L, rotated_pdb in zip(self.unique_lengths, self.rotated_pdbs):
-					f.write(f"structure {rotated_pdb}\n")
-					f.write(f"number {self.length_counts[L]}\n")
-					f.write(f"inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}\n")
-					f.write("constrain_rotation x 0. 0.\n")
-					f.write("constrain_rotation y 0. 0.\n")
-					f.write("constrain_rotation z 0. 0.\n")
-					f.write("end structure\n")
-
-		subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True)
+    def packmol_generate_box(self):
+        with open("packmol_input.inp", "w") as f:
+            f.write("tolerance 2.0\n")
+            f.write("filetype pdb\n")
+            f.write("add_amber_ter\n")
+            f.write(f"output {self.output_pdb}\n")
+    
+            if not self.mix_chains:
+                f.write(f"structure {self.rotated_single_chain}\n")
+                f.write(f"number {self.num_chains}\n")
+                f.write(f"inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}\n")
+                if self.aligned:
+                    f.write("constrain_rotation x 0. 0.\n")
+                    f.write("constrain_rotation y 0. 0.\n")
+                    f.write("constrain_rotation z 0. 0.\n")
+                f.write("end structure\n")
+            else:
+                for L, rotated_pdb in zip(self.unique_lengths, self.rotated_pdbs):
+                    f.write(f"structure {rotated_pdb}\n")
+                    f.write(f"number {self.length_counts[L]}\n")
+                    f.write(f"inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}\n")
+                    if self.aligned:
+                        f.write("constrain_rotation x 0. 0.\n")
+                        f.write("constrain_rotation y 0. 0.\n")
+                        f.write("constrain_rotation z 0. 0.\n")
+                    f.write("end structure\n")
+    
+        subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True, check=True)
 #		subprocess.run('packmol < packmol_input.inp', shell=True)
 	
 	def create_bulk_phase(self):
@@ -598,11 +617,13 @@ class Dry_AmberParams:
 		self.polymer = polymer
 		self.chain_length = chain_length
 		self.num_chains = num_chains
+		self.mix_chains = bulk_creator.mix_chains
 		self.box_size_x = bulk_creator.box_size_x
 		self.box_size_y = bulk_creator.box_size_y
 		self.box_size_z = bulk_creator.box_size_z
-		self.pdb_file = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}.pdb"
-		
+		self.system_tag = system_name(self.polymer, self.chain_length, self.num_chains, self.mix_chains)
+		self.pdb_file = f"{self.system_tag}.pdb"
+
 	def create_amber_params(self):
 		with open('final_leap_input.in', 'w') as f:
 			f.write(f"""
@@ -614,14 +635,14 @@ class Dry_AmberParams:
 			mol = loadpdb {self.pdb_file}
 			set mol box {{ {self.box_size_x} {self.box_size_y} {self.box_size_z} }}
 			set default nocenter on
-			saveamberparm mol {self.polymer}_n-{self.chain_length}x{self.num_chains}.prmtop {self.polymer}_n-{self.chain_length}x{self.num_chains}.inpcrd
+			saveamberparm mol {self.system_tag}.prmtop {self.system_tag}.inpcrd
 			quit
 			""")
-	
-		self.prmtop = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}.prmtop"
-		self.inpcrd = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}.inpcrd"
-		amber_pdb = f"{self.polymer}_n-{self.chain_length}x{self.num_chains}_amber.pdb"
-	
+
+		self.prmtop = f"{self.system_tag}.prmtop"
+		self.inpcrd = f"{self.system_tag}.inpcrd"
+		amber_pdb = f"{self.system_tag}_amber.pdb"
+
 		subprocess.run('tleap -f final_leap_input.in > final_leap_input.out', shell=True, check=True)
 		ambpdb_command = f"ambpdb -p {self.prmtop} -c {self.inpcrd} > {amber_pdb}"
 		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1150,7 +1171,12 @@ conf_selection = "best" #best or random
 conf_output_file = f"{polymer}_conf.txt"
 temperature = 300
 chain_length = 15
-num_chains = 20
+num_chains = 30
+mix_chains = False
+mix_seed = 42
+chain_lengths = generate_chain_lengths(chain_length, num_chains, mix_chains, mix_seed)
+system_tag = system_name(polymer, chain_length, num_chains, mix_chains)
+aligned = True
 nproc = get_nproc()
 use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
 
@@ -1184,14 +1210,22 @@ with open(output, 'a') as f:
 # Creating GAFF2 parameters for the monomer unit and creating specfic chain length single polymer 
 param = GAFF2Param(polymer, chain_length, nproc)
 param.parameterization(selected_conf)
+if mix_chains:
+	for L in sorted(set(chain_lengths)):
+		if L != chain_length:
+			param.create_polymer_chain(chain_length=L)
 with open(output, 'a') as f:
 	print(f"\tGAFF2 parameters and single polymer chain creation finished", file=f)
 
 # Align the single polymer chain, define the box dimension based on the polymer chain, and create the bulk phase
-dry_bulk_creator = Dry_BulkCreator(polymer, chain_length, num_chains)
+with open(output, 'a') as f:
+	print(f"\tChain mode mix_chains = {mix_chains}", file=f)
+	print(f"\tChain lengths = {chain_lengths}", file=f)
+dry_bulk_creator = Dry_BulkCreator(polymer, chain_length, num_chains, mix_chains, chain_lengths, aligned)
 dry_bulk_creator.create_bulk_phase()
 with open(output, 'a') as f:
-	print(f"\tAlignment of single polymer chain and bulk phase creation finished", file=f)
+	print(f"\tBulk phase creation finished", file=f)
+	print(f"\tAligned packing = {aligned}", file=f)
 	
 # Create amber parameters
 dry_amber = Dry_AmberParams(polymer, chain_length, num_chains, bulk_creator = dry_bulk_creator)
@@ -1203,8 +1237,8 @@ with open(output, 'a') as f:
 os.chdir(dry_eq_dir)
 
 for params in [
-	f"{polymer}_n-{chain_length}x{num_chains}.prmtop",
-	f"{polymer}_n-{chain_length}x{num_chains}.inpcrd",
+	f"{system_tag}.prmtop",
+	f"{system_tag}.inpcrd",
 ]:
 	shutil.copy(os.path.join(init_dir, params), dry_eq_dir)
 
@@ -1237,10 +1271,10 @@ nc_files = [f"dry-eq_1-nvt.nc",
 	f"dry-eq_6-npt.nc",
 	f"dry-eq_7-nvt-pr.nc",
 	]
-prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}.prmtop"
 ncrst_file = f"dry-eq_7-nvt-pr.ncrst"
-pdb_file = f"{polymer}_n-{chain_length}x{num_chains}_dry-eq_last.pdb"
-merged_pdb=f"{polymer}_n-{chain_length}x{num_chains}_dry-eq.pdb"
+prmtop_file = f"{system_tag}.prmtop"
+pdb_file = f"{system_tag}_dry-eq_last.pdb"
+merged_pdb = f"{system_tag}_dry-eq.pdb"
 cpptraj_file="cpptraj.in"
 prefix=f"dry-eq_tmp"
 dry_md_analysis = Analysis()
@@ -1249,230 +1283,230 @@ dry_md_analysis.merge_nc_files(prmtop_file, ncrst_file, pdb_file, nc_files, pref
 with open(output, 'a') as f:
 	print(f"\tDry equilibration trajectory merging finished", file=f)
 
-# Copy necessary files for hydrate equilibration
-os.chdir(hyd_eq_dir)
-
-shutil.copy(os.path.join(dry_eq_dir, pdb_file), hyd_eq_dir)
-shutil.copy(os.path.join(input_dir, "h2o.pdb"), hyd_eq_dir)
-
-for params in [
-	"h.prepi",
-	"t.prepi",
-	f"{polymer}_m.prepi",
-	f"{polymer}_gaff2.frcmod",
-]:
-	shutil.copy(os.path.join(init_dir, params), hyd_eq_dir)
-for inputs in [
-	"hyd-eq_0-min.in",
-	"hyd-eq_1-nvt.in",
-	"hyd-eq_2-nvt.in",
-	"hyd-eq_3-nvt.in",
-	"hyd-eq_4-npt.in",
-	"hyd-eq_5-nvt-pr.in",
-]:
-	shutil.copy(os.path.join(input_dir, inputs), hyd_eq_dir)
-
-# Run the hydrated equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
-lam_list = [4, 8, 12]
-base_hyd_pdb = pdb_file
-polymer_file = read(base_hyd_pdb)
-cell = polymer_file.cell
-a, b, c = cell.lengths()
-num_S = sum(1 for atom in polymer_file if atom.symbol == "S")
-
-for i, lam in enumerate(lam_list):
-	if i > 0:
-		base_hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam_list[i-1]}-h2o_hyd-eq_last.pdb"
-		polymer_file = read(base_hyd_pdb)
-		cell = polymer_file.cell
-		a, b, c = cell.lengths()
-	
-	num_h2o = lam * num_S
-	
-	lam_dir = os.path.join(hyd_eq_dir, f"{lam}_h2o")
-	lam_init_dir = os.path.join(lam_dir, "init")
-	lam_md_dir = os.path.join(lam_dir, "md")
-	
-	os.makedirs(lam_dir, exist_ok=True)
-	os.makedirs(lam_init_dir, exist_ok=True)
-	os.makedirs(lam_md_dir, exist_ok=True)
-	
-	for fname in [
-		"h.prepi",
-		"t.prepi",
-		f"{polymer}_m.prepi",
-		f"{polymer}_gaff2.frcmod",
-		"h2o.pdb",
-		base_hyd_pdb,
-	]:
-		shutil.copy(os.path.join(hyd_eq_dir, fname), lam_dir)
-	
-	for fname in [
-		"hyd-eq_0-min.in",
-		"hyd-eq_1-nvt.in",
-		"hyd-eq_2-nvt.in",
-		"hyd-eq_3-nvt.in",
-		"hyd-eq_4-npt.in",
-		"hyd-eq_5-nvt-pr.in",
-	]:
-		shutil.copy(os.path.join(hyd_eq_dir, fname), lam_md_dir)
-
-	os.chdir(lam_dir) 
-
-	# Create the bulk phase for specific hydration level (lambda)
-	hyd_bulk_creator = Hyd_BulkCreator(polymer, chain_length, num_chains, a, b, c, num_h2o, lam, base_hyd_pdb)
-	hyd_bulk_creator.create_bulk_phase()
-	with open(output, 'a') as f:
-		print(f"\tHydration lambda={lam} bulk phase creation finished", file=f)
-
-	# Create amber parameters for specific hydration level (lambda)
-	hyd_amber = Hyd_AmberParams(polymer, chain_length, num_chains, bulk_creator = hyd_bulk_creator)
-	hyd_amber.create_amber_params()
-	with open(output, 'a') as f:
-		print(f"\tAmber parameters are created for the hydration lambda={lam} bulk phase", file=f)
-
-	for fname in [
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop",
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.inpcrd",
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_amber.pdb",	   
-	]:
-		shutil.move(fname, os.path.join(lam_md_dir, os.path.basename(fname)))
-	
-	for fname in os.listdir("."):
-		if os.path.isfile(fname) and not fname.endswith((".prmtop", ".inpcrd", ".pdb")):
-			shutil.move(fname, os.path.join(lam_init_dir, fname))
-	
-	os.chdir(lam_md_dir)
-	
-	# Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
-	with open(output, 'a') as f:
-		print(f"\tHydration lambda={lam} equilibration MD simulations started", file=f)
-	hyd_md = Hyd_MDSimulation(nproc, output, amber_params=hyd_amber, use_gpu=use_gpu)
-	hyd_md.run_all_steps()
-	with open(output, 'a') as f:
-		print(f"\tHydration lambda={lam} equilibration MD simulations finished", file=f)
-	
-	 # Perform trajectory files merging and conversion
-	nc_files = [f"hyd-eq_1-nvt.nc",
-		f"hyd-eq_2-nvt.nc",
-		f"hyd-eq_3-nvt.nc", 
-		f"hyd-eq_4-npt.nc",
-		f"hyd-eq_5-nvt-pr.nc",
-	]
-	prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop"
-	ncrst_file = f"hyd-eq_5-nvt-pr.ncrst"
-	pdb_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_last.pdb"
-	merged_pdb=f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq.pdb"
-	cpptraj_file="cpptraj.in"
-	prefix=f"hdy-eq_tmp"
-	hyd_md_analysis = Analysis()
-	hyd_md_analysis.merge_nc_files(prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file)
-
-	shutil.copy(pdb_file, hyd_eq_dir)
-	os.chdir(hyd_eq_dir)
-
-# Copy necessary files for proton conductivity calculations
-os.chdir(cond_dir)
-
-for h3o_files in [
-	"h3o.pdb",
-	"h3o.frcmod",
-	"h3o.prepi", 
-]:
-	shutil.copy(os.path.join(input_dir, h3o_files), cond_dir)
-
-for fname in [
-	"cond_0-min.in",
-	"cond_pr-nvt.in",
-]:
-	shutil.copy(os.path.join(input_dir, fname), cond_dir)
-
-for params in [
-	"h_so3.prepi",
-	"t_so3.prepi",
-	f"{polymer}_m_so3.prepi",
-	f"{polymer}_so3_gaff2.frcmod",
-]:
-	shutil.copy(os.path.join(init_dir, params), cond_dir)
-
-# Run the proton conduction MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
-
-for lam in lam_list:	 
-	lam_cond_dir = os.path.join(cond_dir, f"{lam}_h3o-h2o")
-	lam_cond_init_dir = os.path.join(lam_cond_dir, "init")
-	lam_cond_md_dir = os.path.join(lam_cond_dir, "md")
-	
-	os.makedirs(lam_cond_dir, exist_ok=True)
-	os.makedirs(lam_cond_init_dir, exist_ok=True)
-	os.makedirs(lam_cond_md_dir, exist_ok=True)
-	
-	hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_last.pdb"
-	shutil.copy(os.path.join(hyd_eq_dir, hyd_pdb), lam_cond_dir)
-	
-	for fname in [
-		"h_so3.prepi",
-		"t_so3.prepi",
-		f"{polymer}_m_so3.prepi",
-		f"{polymer}_so3_gaff2.frcmod",
-		"h3o.pdb",
-		"h3o.frcmod",
-		"h3o.prepi", 
-		"cond_0-min.in",
-		"cond_pr-nvt.in"
-	]:
-		shutil.copy(os.path.join(cond_dir, fname), lam_cond_dir)
-	
-	os.chdir(lam_cond_dir)
-	hyd_pdb_file = read(hyd_pdb)
-	cell = hyd_pdb_file.cell
-	a, b, c = cell.lengths()
-	hyd_clean_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_clean.pdb"
-	
-	cleaner = PDBCleaner(hyd_pdb, hyd_clean_pdb, chain_length)
-	cleaner.remove_so3h_hydrogens()
-	num_h3o = cleaner.hydrogens_removed_count
-	
-	with open(output, 'a') as f:
-		print(f"\tConductivity lambda={lam} removed SO3H hydrogens = {num_h3o} and H2O molecule = {num_h3o}", file=f)
-	
-	cond_bulk_creator = Cond_BulkCreator(polymer, chain_length, num_chains, a, b, c, num_h3o, lam, hyd_clean_pdb)
-	cond_bulk_creator.create_bulk_phase()
-	
-	with open(output, 'a') as f:
-		print(f"\tConductivity lambda={lam} bulk phase creation finished", file=f)
-	
-	cond_amber = Cond_AmberParams(polymer, chain_length, num_chains, bulk_creator=cond_bulk_creator)
-	cond_amber.create_amber_params()
-	
-	with open(output, 'a') as f:
-		print(f"\tAmber parameters are created for the conductivity lambda={lam} bulk phase", file=f)	 
-	
-	for fname in [
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
-		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",
-		"cond_0-min.in",
-		"cond_pr-nvt.in",
-	]:
-		shutil.move(fname, os.path.join(lam_cond_md_dir, os.path.basename(fname)))
-	
-	for fname in os.listdir("."):
-		if os.path.isfile(fname) and fname not in[
-			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
-			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
-			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",		   
-		]:
-			shutil.move(fname, os.path.join(lam_cond_init_dir, fname))
-	
-	os.chdir(lam_cond_md_dir)
-	
-	with open(output, 'a') as f:
-		print(f"\tConductivity lambda={lam} MD simulations started", file=f)
-		
-	cond_md = Cond_MDSimulation(nproc, output, amber_params=cond_amber, use_gpu=use_gpu)
-	cond_md.run_all_steps()
-	
-	with open(output, 'a') as f:
-		print(f"\tConductivity lambda={lam} MD simulations finished", file=f)
-	
-	os.chdir(base_dir)
+## Copy necessary files for hydrate equilibration
+#os.chdir(hyd_eq_dir)
+#
+#shutil.copy(os.path.join(dry_eq_dir, pdb_file), hyd_eq_dir)
+#shutil.copy(os.path.join(input_dir, "h2o.pdb"), hyd_eq_dir)
+#
+#for params in [
+#	"h.prepi",
+#	"t.prepi",
+#	f"{polymer}_m.prepi",
+#	f"{polymer}_gaff2.frcmod",
+#]:
+#	shutil.copy(os.path.join(init_dir, params), hyd_eq_dir)
+#for inputs in [
+#	"hyd-eq_0-min.in",
+#	"hyd-eq_1-nvt.in",
+#	"hyd-eq_2-nvt.in",
+#	"hyd-eq_3-nvt.in",
+#	"hyd-eq_4-npt.in",
+#	"hyd-eq_5-nvt-pr.in",
+#]:
+#	shutil.copy(os.path.join(input_dir, inputs), hyd_eq_dir)
+#
+## Run the hydrated equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
+#lam_list = [4, 8, 12]
+#base_hyd_pdb = pdb_file
+#polymer_file = read(base_hyd_pdb)
+#cell = polymer_file.cell
+#a, b, c = cell.lengths()
+#num_S = sum(1 for atom in polymer_file if atom.symbol == "S")
+#
+#for i, lam in enumerate(lam_list):
+#	if i > 0:
+#		base_hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam_list[i-1]}-h2o_hyd-eq_last.pdb"
+#		polymer_file = read(base_hyd_pdb)
+#		cell = polymer_file.cell
+#		a, b, c = cell.lengths()
+#	
+#	num_h2o = lam * num_S
+#	
+#	lam_dir = os.path.join(hyd_eq_dir, f"{lam}_h2o")
+#	lam_init_dir = os.path.join(lam_dir, "init")
+#	lam_md_dir = os.path.join(lam_dir, "md")
+#	
+#	os.makedirs(lam_dir, exist_ok=True)
+#	os.makedirs(lam_init_dir, exist_ok=True)
+#	os.makedirs(lam_md_dir, exist_ok=True)
+#	
+#	for fname in [
+#		"h.prepi",
+#		"t.prepi",
+#		f"{polymer}_m.prepi",
+#		f"{polymer}_gaff2.frcmod",
+#		"h2o.pdb",
+#		base_hyd_pdb,
+#	]:
+#		shutil.copy(os.path.join(hyd_eq_dir, fname), lam_dir)
+#	
+#	for fname in [
+#		"hyd-eq_0-min.in",
+#		"hyd-eq_1-nvt.in",
+#		"hyd-eq_2-nvt.in",
+#		"hyd-eq_3-nvt.in",
+#		"hyd-eq_4-npt.in",
+#		"hyd-eq_5-nvt-pr.in",
+#	]:
+#		shutil.copy(os.path.join(hyd_eq_dir, fname), lam_md_dir)
+#
+#	os.chdir(lam_dir) 
+#
+#	# Create the bulk phase for specific hydration level (lambda)
+#	hyd_bulk_creator = Hyd_BulkCreator(polymer, chain_length, num_chains, a, b, c, num_h2o, lam, base_hyd_pdb)
+#	hyd_bulk_creator.create_bulk_phase()
+#	with open(output, 'a') as f:
+#		print(f"\tHydration lambda={lam} bulk phase creation finished", file=f)
+#
+#	# Create amber parameters for specific hydration level (lambda)
+#	hyd_amber = Hyd_AmberParams(polymer, chain_length, num_chains, bulk_creator = hyd_bulk_creator)
+#	hyd_amber.create_amber_params()
+#	with open(output, 'a') as f:
+#		print(f"\tAmber parameters are created for the hydration lambda={lam} bulk phase", file=f)
+#
+#	for fname in [
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop",
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.inpcrd",
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_amber.pdb",	   
+#	]:
+#		shutil.move(fname, os.path.join(lam_md_dir, os.path.basename(fname)))
+#	
+#	for fname in os.listdir("."):
+#		if os.path.isfile(fname) and not fname.endswith((".prmtop", ".inpcrd", ".pdb")):
+#			shutil.move(fname, os.path.join(lam_init_dir, fname))
+#	
+#	os.chdir(lam_md_dir)
+#	
+#	# Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
+#	with open(output, 'a') as f:
+#		print(f"\tHydration lambda={lam} equilibration MD simulations started", file=f)
+#	hyd_md = Hyd_MDSimulation(nproc, output, amber_params=hyd_amber, use_gpu=use_gpu)
+#	hyd_md.run_all_steps()
+#	with open(output, 'a') as f:
+#		print(f"\tHydration lambda={lam} equilibration MD simulations finished", file=f)
+#	
+#	 # Perform trajectory files merging and conversion
+#	nc_files = [f"hyd-eq_1-nvt.nc",
+#		f"hyd-eq_2-nvt.nc",
+#		f"hyd-eq_3-nvt.nc", 
+#		f"hyd-eq_4-npt.nc",
+#		f"hyd-eq_5-nvt-pr.nc",
+#	]
+#	prmtop_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o.prmtop"
+#	ncrst_file = f"hyd-eq_5-nvt-pr.ncrst"
+#	pdb_file = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_last.pdb"
+#	merged_pdb=f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq.pdb"
+#	cpptraj_file="cpptraj.in"
+#	prefix=f"hdy-eq_tmp"
+#	hyd_md_analysis = Analysis()
+#	hyd_md_analysis.merge_nc_files(prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file)
+#
+#	shutil.copy(pdb_file, hyd_eq_dir)
+#	os.chdir(hyd_eq_dir)
+#
+## Copy necessary files for proton conductivity calculations
+#os.chdir(cond_dir)
+#
+#for h3o_files in [
+#	"h3o.pdb",
+#	"h3o.frcmod",
+#	"h3o.prepi", 
+#]:
+#	shutil.copy(os.path.join(input_dir, h3o_files), cond_dir)
+#
+#for fname in [
+#	"cond_0-min.in",
+#	"cond_pr-nvt.in",
+#]:
+#	shutil.copy(os.path.join(input_dir, fname), cond_dir)
+#
+#for params in [
+#	"h_so3.prepi",
+#	"t_so3.prepi",
+#	f"{polymer}_m_so3.prepi",
+#	f"{polymer}_so3_gaff2.frcmod",
+#]:
+#	shutil.copy(os.path.join(init_dir, params), cond_dir)
+#
+## Run the proton conduction MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
+#
+#for lam in lam_list:	 
+#	lam_cond_dir = os.path.join(cond_dir, f"{lam}_h3o-h2o")
+#	lam_cond_init_dir = os.path.join(lam_cond_dir, "init")
+#	lam_cond_md_dir = os.path.join(lam_cond_dir, "md")
+#	
+#	os.makedirs(lam_cond_dir, exist_ok=True)
+#	os.makedirs(lam_cond_init_dir, exist_ok=True)
+#	os.makedirs(lam_cond_md_dir, exist_ok=True)
+#	
+#	hyd_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_last.pdb"
+#	shutil.copy(os.path.join(hyd_eq_dir, hyd_pdb), lam_cond_dir)
+#	
+#	for fname in [
+#		"h_so3.prepi",
+#		"t_so3.prepi",
+#		f"{polymer}_m_so3.prepi",
+#		f"{polymer}_so3_gaff2.frcmod",
+#		"h3o.pdb",
+#		"h3o.frcmod",
+#		"h3o.prepi", 
+#		"cond_0-min.in",
+#		"cond_pr-nvt.in"
+#	]:
+#		shutil.copy(os.path.join(cond_dir, fname), lam_cond_dir)
+#	
+#	os.chdir(lam_cond_dir)
+#	hyd_pdb_file = read(hyd_pdb)
+#	cell = hyd_pdb_file.cell
+#	a, b, c = cell.lengths()
+#	hyd_clean_pdb = f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h2o_hyd-eq_clean.pdb"
+#	
+#	cleaner = PDBCleaner(hyd_pdb, hyd_clean_pdb, chain_length)
+#	cleaner.remove_so3h_hydrogens()
+#	num_h3o = cleaner.hydrogens_removed_count
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tConductivity lambda={lam} removed SO3H hydrogens = {num_h3o} and H2O molecule = {num_h3o}", file=f)
+#	
+#	cond_bulk_creator = Cond_BulkCreator(polymer, chain_length, num_chains, a, b, c, num_h3o, lam, hyd_clean_pdb)
+#	cond_bulk_creator.create_bulk_phase()
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tConductivity lambda={lam} bulk phase creation finished", file=f)
+#	
+#	cond_amber = Cond_AmberParams(polymer, chain_length, num_chains, bulk_creator=cond_bulk_creator)
+#	cond_amber.create_amber_params()
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tAmber parameters are created for the conductivity lambda={lam} bulk phase", file=f)	 
+#	
+#	for fname in [
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
+#		f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",
+#		"cond_0-min.in",
+#		"cond_pr-nvt.in",
+#	]:
+#		shutil.move(fname, os.path.join(lam_cond_md_dir, os.path.basename(fname)))
+#	
+#	for fname in os.listdir("."):
+#		if os.path.isfile(fname) and fname not in[
+#			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.prmtop",
+#			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o.inpcrd",
+#			f"{polymer}_n-{chain_length}x{num_chains}_{lam}-h3o-h2o_amber.pdb",		   
+#		]:
+#			shutil.move(fname, os.path.join(lam_cond_init_dir, fname))
+#	
+#	os.chdir(lam_cond_md_dir)
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tConductivity lambda={lam} MD simulations started", file=f)
+#		
+#	cond_md = Cond_MDSimulation(nproc, output, amber_params=cond_amber, use_gpu=use_gpu)
+#	cond_md.run_all_steps()
+#	
+#	with open(output, 'a') as f:
+#		print(f"\tConductivity lambda={lam} MD simulations finished", file=f)
+#	
+#	os.chdir(base_dir)
