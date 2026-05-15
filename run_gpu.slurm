@@ -28,4 +28,4 @@ cp -r * /home/Calculations/$UNAME/$DIR2
 cd /home/Calculations/$UNAME/$DIR2
 
 export USE_GPU=True
-python3 new_aspi-h_screening.py
+python3 spi_cond_simulation_workflow.py
