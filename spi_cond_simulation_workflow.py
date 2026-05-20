@@ -334,16 +334,35 @@ class GAFF2Param:
 		self.chain_length = chain_length
 		self.nproc = nproc
 
-	def remove_atoms(self, mol_in, mol_out):
-		mol_in = read(mol_in)
-		o_indices = [i for i, s in enumerate(mol_in.get_chemical_symbols()) if s == "O"]
-		oh_h_indices = [
-			h for h, s in enumerate(mol_in.get_chemical_symbols())
-			if s == "H" and any(mol_in.get_distance(h, o, mic=True) < 1.2 for o in o_indices)
-		]
-		for i in sorted(oh_h_indices, reverse=True):
-			del mol_in[i]
-		write(mol_out, mol_in)
+    def remove_atoms(self, mol_in, mol_out):
+        mol = read(mol_in)
+        symbols = mol.get_chemical_symbols()
+    
+        s_indices = [i for i, s in enumerate(symbols) if s == "S"]
+        o_indices = [i for i, s in enumerate(symbols) if s == "O"]
+        h_indices = [i for i, s in enumerate(symbols) if s == "H"]
+    
+        oh_h_indices = []
+    
+        for o_idx in o_indices:
+            # oxygen must be bonded to sulfur
+            is_o_connected_to_s = any(
+                mol.get_distance(o_idx, s_idx, mic=True) < 1.9
+                for s_idx in s_indices
+            )
+    
+            if not is_o_connected_to_s:
+                continue
+    
+            # find hydrogen bonded to this O
+            for h_idx in h_indices:
+                if mol.get_distance(h_idx, o_idx, mic=True) < 1.2:
+                    oh_h_indices.append(h_idx)
+    
+        for i in sorted(set(oh_h_indices), reverse=True):
+            del mol[i]
+    
+        write(mol_out, mol)
 		
 	def orca_calculation(self, mol, charge, mult, file_name):
 		orca_calc = ORCA(
@@ -440,7 +459,7 @@ class GAFF2Param:
 		sequence.extend([f'{self.polymer}'] * num_middle_units)
 		sequence.append('T')
 	
-		formatted_sequence = '{' + ' '.join(sequence) + '}'
+		formatted_sequence = format_leap_sequence(sequence)
 		leap_input_filename = f'leap_input_n-{chain_length}.in'
 		leap_output_filename = f'leap_input_n-{chain_length}.out'
 		
@@ -1222,6 +1241,8 @@ chain_length = 15
 num_chains = 30
 mix_chains = True
 mix_seed = 42
+lam_list = [4, 8, 12]
+cond_lam_list = [4, 8, 12] 
 chain_lengths = generate_chain_lengths(chain_length, num_chains, mix_chains, mix_seed)
 system_tag = system_name(polymer, chain_length, num_chains, mix_chains)
 aligned = True
@@ -1355,7 +1376,6 @@ for inputs in [
 	shutil.copy(os.path.join(input_dir, inputs), hyd_eq_dir)
 
 # Run the hydrated equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
-lam_list = [4, 8, 12]
 base_hyd_pdb = pdb_file
 polymer_file = read(base_hyd_pdb)
 cell = polymer_file.cell
@@ -1480,7 +1500,6 @@ for params in [
 	shutil.copy(os.path.join(init_dir, params), cond_dir)
 
 # Run the proton conduction MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda) for different hydration levels (lambda)
-cond_lam_list = [4, 8, 12] 
 for lam in cond_lam_list:	 
 	lam_cond_dir = os.path.join(cond_dir, f"{lam}_h3o-h2o")
 	lam_cond_init_dir = os.path.join(lam_cond_dir, "init")
