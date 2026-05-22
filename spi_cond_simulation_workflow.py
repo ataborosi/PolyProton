@@ -852,11 +852,11 @@ class Dry_BulkCreator:
 			box_side_area = total_box_volume / box_height
 
 			if self.aligned:
-				scale_factor = 1.65 - 0.3 * np.log2(1 + (dim_x + dim_y) / 10)
-				scale_factor = max(0.5, min(1.5, scale_factor))
+				scale_factor = 2 - 0.3 * np.log2(1 + (avg_dim_x + avg_dim_y) / 10)
+				scale_factor = max(0.5, min(2, scale_factor))
 			else:
-				scale_factor = 3.0 - 0.3 * np.log2(1 + (dim_x + dim_y) / 10)
-				scale_factor = max(0.5, min(3.5, scale_factor))
+				scale_factor = 4 - 0.3 * np.log2(1 + (avg_dim_x + avg_dim_y) / 10)
+				scale_factor = max(0.5, min(4, scale_factor))
 
 			self.box_size_x = np.sqrt(box_side_area) * scale_factor
 			self.box_size_y = np.sqrt(box_side_area) * scale_factor
@@ -875,11 +875,11 @@ class Dry_BulkCreator:
 		box_side_area = total_box_volume / box_height
 
 		if self.aligned:
-			scale_factor = 1.65 - 0.3 * np.log2(1 + (avg_dim_x + avg_dim_y) / 10)
-			scale_factor = max(0.5, min(1.5, scale_factor))
+			scale_factor = 2 - 0.3 * np.log2(1 + (avg_dim_x + avg_dim_y) / 10)
+			scale_factor = max(0.5, min(2, scale_factor))
 		else:
-			scale_factor = 3.0 - 0.3 * np.log2(1 + (avg_dim_x + avg_dim_y) / 10)
-			scale_factor = max(0.5, min(3.5, scale_factor))
+			scale_factor = 4 - 0.3 * np.log2(1 + (avg_dim_x + avg_dim_y) / 10)
+			scale_factor = max(0.5, min(4, scale_factor))
 
 		self.box_size_x = np.sqrt(box_side_area) * scale_factor
 		self.box_size_y = np.sqrt(box_side_area) * scale_factor
