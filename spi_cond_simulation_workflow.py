@@ -56,8 +56,8 @@ mix_chains = True
 mix_seed = 42
 aligned = True
 
-lam_list = [4, 8, 12]
-cond_lam_list = [4, 8, 12]
+lam_list = [2, 4, 6, 8, 10, 12]
+cond_lam_list = [12]
 
 use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
 
@@ -1047,13 +1047,17 @@ class Hyd_BulkCreator:
 			amber_ter_preserve
 			output {self.system_tag}.pdb
 			pbc {self.box_size_x} {self.box_size_y} {self.box_size_z}
-			structure {self.pdb_file}
+			
+            structure {self.pdb_file}
 			number 1
 			fixed 0. 0. 0. 0. 0. 0.
-			end structure
-			structure h2o.pdb
+			resnumbers 1
+            end structure
+			
+            structure h2o.pdb
 			number {self.num_h2o}
-			end structure
+			resnumbers 3
+            end structure
 			""")
 
 		subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True, check=True)
@@ -1191,12 +1195,16 @@ class Cond_BulkCreator:
 			amber_ter_preserve
 			output {self.system_tag}.pdb
 			pbc {self.box_size_x} {self.box_size_y} {self.box_size_z}
-			structure {self.pdb_file}
+			
+            structure {self.pdb_file}
 			number 1
 			fixed 0. 0. 0. 0. 0. 0.
+            resnumbers 1
 			end structure
-			structure h3o.pdb
+			
+            structure h3o.pdb
 			number {self.num_h3o}
+            resnumbers 3
 			end structure
 			""")
 	
@@ -1465,7 +1473,14 @@ def run_hydration_workflow(dry_pdb_file, nproc):
 			cell = polymer_file.cell
 			a, b, c = cell.lengths()
 	
-		num_h2o = lam * num_S
+		prev_lam = 0 if i == 0 else lam_list[i - 1]
+		add_lam = lam - prev_lam
+		if add_lam <= 0:
+			raise ValueError(f"lam_list must be strictly increasing. Previous lambda={prev_lam}, current lambda={lam}")
+		num_h2o = add_lam * num_S
+		with open(output, 'a') as f:
+			print(f"\tHydration lambda={lam}: target total H2O={lam * num_S}", file=f)
+		
 		lam_tag = hyd_system_name(polymer, chain_length, num_chains, lam, mix_chains)
 		
 		lam_dir = os.path.join(hyd_eq_dir, f"{lam}_h2o")
