@@ -59,6 +59,8 @@ aligned = True
 lam_list = [2, 4, 6, 8, 10, 12]
 cond_lam_list = [12]
 
+dry_eq_prot = "6-step" # "6-step" or "12-step"
+
 use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
 
 run_param = True
@@ -75,10 +77,13 @@ output = os.path.join(base_dir, 'spi_cond_simulation_workflow_process.txt')
 
 polymer_dir = os.path.join(base_dir, polymer)
 init_dir = os.path.join(polymer_dir, "init")
-dry_eq_dir = os.path.join(polymer_dir, "dry-eq")
-hyd_eq_dir = os.path.join(polymer_dir, "hyd-eq")
-cond_dir = os.path.join(polymer_dir, "cond")
+dry_eq_dir = os.path.join(polymer_dir, "dry_eq")
+hyd_eq_dir = os.path.join(polymer_dir, "hyd_eq")
+cond_pr_dir = os.path.join(polymer_dir, "cond_pr")
 input_dir = os.path.join(base_dir, "input_files")
+dry_eq_input_dir = os.path.join(input_dir, "dry_eq", dry_eq_prot)
+hyd_eq_input_dir = os.path.join(input_dir, "hyd_eq")
+cond_pr_input_dir = os.path.join(input_dir, "cond_pr")
 
 # ====
 # Helper functions
@@ -96,7 +101,7 @@ def ensure_directories():
 	os.makedirs(init_dir, exist_ok=True)
 	os.makedirs(dry_eq_dir, exist_ok=True)
 	os.makedirs(hyd_eq_dir, exist_ok=True)
-	os.makedirs(cond_dir, exist_ok=True)
+	os.makedirs(cond_pr_dir, exist_ok=True)
 
 def copy_connectivity_cards():
 	for cards in ["head", "main", "tail", "head_so3", "main_so3", "tail_so3"]:
@@ -183,6 +188,9 @@ def validate_settings():
 
 	if num_chains < 1:
 		raise ValueError("num_chains must be >= 1")
+		
+	if dry_eq_prot not in ["6-step", "12-step"]:
+		raise ValueError("dry_eq_prot must be '6-step' or '12-step'")
 
 	for lam in cond_lam_list:
 		if lam not in lam_list:
@@ -196,6 +204,7 @@ def log_settings(chain_lengths, system_tag, nproc):
 	log_message(f"\tmix_chains = {mix_chains}")
 	log_message(f"\tchain_lengths = {chain_lengths}")
 	log_message(f"\taligned = {aligned}")
+	log_message(f"\tdry_eq_prot = {dry_eq_prot}")
 	log_message(f"\tlam_list = {lam_list}")
 	log_message(f"\tcond_lam_list = {cond_lam_list}")
 	log_message(f"\tsystem_tag = {system_tag}")
@@ -1005,17 +1014,37 @@ class Dry_MDSimulation():
 		with open(self.output, 'a') as f:
 			print(f"\t\tFinished {step_name} step", file=f)
 
-	def run_all_steps(self):
-		steps = [
-			("dry-eq_min", "dry-eq_0-min.in", "dry-eq_0-min.out", f"{self.inpcrd}", "dry-eq_0-min.ncrst", f"{self.inpcrd}"),
-			("dry-eq_1-nvt", "dry-eq_1-nvt.in", "dry-eq_1-nvt.out", "dry-eq_0-min.ncrst", "dry-eq_1-nvt.ncrst", "dry-eq_0-min.ncrst", "-x dry-eq_1-nvt.nc"),
-			("dry-eq_2-npt", "dry-eq_2-npt.in", "dry-eq_2-npt.out", "dry-eq_1-nvt.ncrst", "dry-eq_2-npt.ncrst", "dry-eq_1-nvt.ncrst", "-x dry-eq_2-npt.nc"),
-			("dry-eq_3-nvt", "dry-eq_3-nvt.in", "dry-eq_3-nvt.out", "dry-eq_2-npt.ncrst", "dry-eq_3-nvt.ncrst", "dry-eq_2-npt.ncrst", "-x dry-eq_3-nvt.nc"),
-			("dry-eq_4-npt", "dry-eq_4-npt.in", "dry-eq_4-npt.out", "dry-eq_3-nvt.ncrst", "dry-eq_4-npt.ncrst", "dry-eq_3-nvt.ncrst", "-x dry-eq_4-npt.nc"),
-			("dry-eq_5-nvt", "dry-eq_5-nvt.in", "dry-eq_5-nvt.out", "dry-eq_4-npt.ncrst", "dry-eq_5-nvt.ncrst", "dry-eq_4-npt.ncrst", "-x dry-eq_5-nvt.nc"),
-			("dry-eq_6-npt", "dry-eq_6-npt.in", "dry-eq_6-npt.out", "dry-eq_5-nvt.ncrst", "dry-eq_6-npt.ncrst", "dry-eq_5-nvt.ncrst", "-x dry-eq_6-npt.nc"),
-			("dry-eq_7-nvt-pr", "dry-eq_7-nvt-pr.in", "dry-eq_7-nvt-pr.out", "dry-eq_6-npt.ncrst", "dry-eq_7-nvt-pr.ncrst", "dry-eq_6-npt.ncrst", "-x dry-eq_7-nvt-pr.nc"),
-		]
+	def run_all_steps(self, protocol):
+		if protocol == "6-step":
+			steps = [
+				("dry-eq_min", "dry-eq_0-min.in", "dry-eq_0-min.out", f"{self.inpcrd}", "dry-eq_0-min.ncrst", f"{self.inpcrd}"),
+				("dry-eq_1-nvt", "dry-eq_1-nvt.in", "dry-eq_1-nvt.out", "dry-eq_0-min.ncrst", "dry-eq_1-nvt.ncrst", "dry-eq_0-min.ncrst", "-x dry-eq_1-nvt.nc"),
+				("dry-eq_2-npt", "dry-eq_2-npt.in", "dry-eq_2-npt.out", "dry-eq_1-nvt.ncrst", "dry-eq_2-npt.ncrst", "dry-eq_1-nvt.ncrst", "-x dry-eq_2-npt.nc"),
+				("dry-eq_3-nvt", "dry-eq_3-nvt.in", "dry-eq_3-nvt.out", "dry-eq_2-npt.ncrst", "dry-eq_3-nvt.ncrst", "dry-eq_2-npt.ncrst", "-x dry-eq_3-nvt.nc"),
+				("dry-eq_4-npt", "dry-eq_4-npt.in", "dry-eq_4-npt.out", "dry-eq_3-nvt.ncrst", "dry-eq_4-npt.ncrst", "dry-eq_3-nvt.ncrst", "-x dry-eq_4-npt.nc"),
+				("dry-eq_5-nvt", "dry-eq_5-nvt.in", "dry-eq_5-nvt.out", "dry-eq_4-npt.ncrst", "dry-eq_5-nvt.ncrst", "dry-eq_4-npt.ncrst", "-x dry-eq_5-nvt.nc"),
+				("dry-eq_6-npt", "dry-eq_6-npt.in", "dry-eq_6-npt.out", "dry-eq_5-nvt.ncrst", "dry-eq_6-npt.ncrst", "dry-eq_5-nvt.ncrst", "-x dry-eq_6-npt.nc"),
+				("dry-eq_7-nvt-pr", "dry-eq_7-nvt-pr.in", "dry-eq_7-nvt-pr.out", "dry-eq_6-npt.ncrst", "dry-eq_7-nvt-pr.ncrst", "dry-eq_6-npt.ncrst", "-x dry-eq_7-nvt-pr.nc"),
+			]
+		elif protocol == "12-step":
+			steps = [
+				("dry-eq_min", "dry-eq_0-min.in", "dry-eq_0-min.out", f"{self.inpcrd}", "dry-eq_0-min.ncrst", f"{self.inpcrd}"),
+				("dry-eq_1-nvt", "dry-eq_1-nvt.in", "dry-eq_1-nvt.out", "dry-eq_0-min.ncrst", "dry-eq_1-nvt.ncrst", "dry-eq_0-min.ncrst", "-x dry-eq_1-nvt.nc"),
+				("dry-eq_2-npt", "dry-eq_2-npt.in", "dry-eq_2-npt.out", "dry-eq_1-nvt.ncrst", "dry-eq_2-npt.ncrst", "dry-eq_1-nvt.ncrst", "-x dry-eq_2-npt.nc"),
+				("dry-eq_3-nvt", "dry-eq_3-nvt.in", "dry-eq_3-nvt.out", "dry-eq_2-npt.ncrst", "dry-eq_3-nvt.ncrst", "dry-eq_2-npt.ncrst", "-x dry-eq_3-nvt.nc"),
+				("dry-eq_4-npt", "dry-eq_4-npt.in", "dry-eq_4-npt.out", "dry-eq_3-nvt.ncrst", "dry-eq_4-npt.ncrst", "dry-eq_3-nvt.ncrst", "-x dry-eq_4-npt.nc"),
+				("dry-eq_5-nvt", "dry-eq_5-nvt.in", "dry-eq_5-nvt.out", "dry-eq_4-npt.ncrst", "dry-eq_5-nvt.ncrst", "dry-eq_4-npt.ncrst", "-x dry-eq_5-nvt.nc"),
+				("dry-eq_6-npt", "dry-eq_6-npt.in", "dry-eq_6-npt.out", "dry-eq_5-nvt.ncrst", "dry-eq_6-npt.ncrst", "dry-eq_5-nvt.ncrst", "-x dry-eq_6-npt.nc"),
+				("dry-eq_7-nvt", "dry-eq_7-nvt.in", "dry-eq_7-nvt.out", "dry-eq_6-npt.ncrst", "dry-eq_7-nvt.ncrst", "dry-eq_6-npt.ncrst", "-x dry-eq_7-nvt.nc"),
+				("dry-eq_8-npt", "dry-eq_8-npt.in", "dry-eq_8-npt.out", "dry-eq_7-nvt.ncrst", "dry-eq_8-npt.ncrst", "dry-eq_7-nvt.ncrst", "-x dry-eq_8-npt.nc"),
+				("dry-eq_9-nvt", "dry-eq_9-nvt.in", "dry-eq_9-nvt.out", "dry-eq_8-npt.ncrst", "dry-eq_9-nvt.ncrst", "dry-eq_8-npt.ncrst", "-x dry-eq_9-nvt.nc"),
+				("dry-eq_10-npt", "dry-eq_10-npt.in", "dry-eq_10-npt.out", "dry-eq_9-nvt.ncrst", "dry-eq_10-npt.ncrst", "dry-eq_9-nvt.ncrst", "-x dry-eq_10-npt.nc"),
+				("dry-eq_11-nvt", "dry-eq_11-nvt.in", "dry-eq_11-nvt.out", "dry-eq_10-npt.ncrst", "dry-eq_11-nvt.ncrst", "dry-eq_10-npt.ncrst", "-x dry-eq_11-nvt.nc"),
+				("dry-eq_12-npt", "dry-eq_12-npt.in", "dry-eq_12-npt.out", "dry-eq_11-nvt.ncrst", "dry-eq_12-npt.ncrst", "dry-eq_11-nvt.ncrst", "-x dry-eq_12-npt.nc"),
+				("dry-eq_13-nvt-pr", "dry-eq_13-nvt-pr.in", "dry-eq_13-nvt-pr.out", "dry-eq_12-npt.ncrst", "dry-eq_13-nvt-pr.ncrst", "dry-eq_12-npt.ncrst", "-x dry-eq_13-nvt-pr.nc"),
+			]
+		else:
+			raise ValueError(f"Unknown dry equilibration protocol: {protocol}")
 
 		for step in steps:
 			self.run_simulation(*step)
@@ -1048,16 +1077,16 @@ class Hyd_BulkCreator:
 			output {self.system_tag}.pdb
 			pbc {self.box_size_x} {self.box_size_y} {self.box_size_z}
 			
-            structure {self.pdb_file}
+			structure {self.pdb_file}
 			number 1
 			fixed 0. 0. 0. 0. 0. 0.
 			resnumbers 1
-            end structure
+			end structure
 			
-            structure h2o.pdb
+			structure h2o.pdb
 			number {self.num_h2o}
 			resnumbers 3
-            end structure
+			end structure
 			""")
 
 		subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True, check=True)
@@ -1196,15 +1225,15 @@ class Cond_BulkCreator:
 			output {self.system_tag}.pdb
 			pbc {self.box_size_x} {self.box_size_y} {self.box_size_z}
 			
-            structure {self.pdb_file}
+			structure {self.pdb_file}
 			number 1
 			fixed 0. 0. 0. 0. 0. 0.
-            resnumbers 1
+			resnumbers 1
 			end structure
 			
-            structure h3o.pdb
+			structure h3o.pdb
 			number {self.num_h3o}
-            resnumbers 3
+			resnumbers 3
 			end structure
 			""")
 	
@@ -1392,34 +1421,78 @@ def run_dry_workflow(chain_lengths, system_tag, nproc):
 	for params in [f"{system_tag}.prmtop", f"{system_tag}.inpcrd"]:
 		shutil.copy(os.path.join(init_dir, params), dry_eq_dir)
 
-	for inputs in [
-		"dry-eq_0-min.in",
-		"dry-eq_1-nvt.in",
-		"dry-eq_2-npt.in",
-		"dry-eq_3-nvt.in",
-		"dry-eq_4-npt.in",
-		"dry-eq_5-nvt.in",
-		"dry-eq_6-npt.in",
-		"dry-eq_7-nvt-pr.in",
-	]:
-		shutil.copy(os.path.join(input_dir, inputs), dry_eq_dir)
+	if dry_eq_prot == "6-step":
+		dry_eq_input_files = [
+			"dry-eq_0-min.in",
+			"dry-eq_1-nvt.in",
+			"dry-eq_2-npt.in",
+			"dry-eq_3-nvt.in",
+			"dry-eq_4-npt.in",
+			"dry-eq_5-nvt.in",
+			"dry-eq_6-npt.in",
+			"dry-eq_7-nvt-pr.in",
+		]
+	elif dry_eq_prot == "12-step":
+		dry_eq_input_files = [
+			"dry-eq_0-min.in",
+			"dry-eq_1-nvt.in",
+			"dry-eq_2-npt.in",
+			"dry-eq_3-nvt.in",
+			"dry-eq_4-npt.in",
+			"dry-eq_5-nvt.in",
+			"dry-eq_6-npt.in",
+			"dry-eq_7-nvt.in",
+			"dry-eq_8-npt.in",
+			"dry-eq_9-nvt.in",
+			"dry-eq_10-npt.in",
+			"dry-eq_11-nvt.in",
+			"dry-eq_12-npt.in",
+			"dry-eq_13-nvt-pr.in",
+		]
+	else:
+		raise ValueError(f"Unknown dry equilibration protocol: {dry_eq_prot}")
+
+	for inputs in dry_eq_input_files:
+		shutil.copy(os.path.join(dry_eq_input_dir, inputs), dry_eq_dir)	   
 
 	log_message("\tDry equilibration MD simulations started")
 	dry_md = Dry_MDSimulation(nproc, output, amber_params=dry_amber, use_gpu=use_gpu)
-	dry_md.run_all_steps()
+	dry_md.run_all_steps(dry_eq_prot)
 	log_message("\tDry equilibration MD simulations finished")
 
-	nc_files = [
-		"dry-eq_1-nvt.nc",
-		"dry-eq_2-npt.nc",
-		"dry-eq_3-nvt.nc",
-		"dry-eq_4-npt.nc",
-		"dry-eq_5-nvt.nc",
-		"dry-eq_6-npt.nc",
-		"dry-eq_7-nvt-pr.nc",
-	]
+	if dry_eq_prot == "6-step":
+		nc_files = [
+			"dry-eq_1-nvt.nc",
+			"dry-eq_2-npt.nc",
+			"dry-eq_3-nvt.nc",
+			"dry-eq_4-npt.nc",
+			"dry-eq_5-nvt.nc",
+			"dry-eq_6-npt.nc",
+			"dry-eq_7-nvt-pr.nc",
+		]
+		ncrst_file = "dry-eq_7-nvt-pr.ncrst"
+	
+	elif dry_eq_prot == "12-step":
+		nc_files = [
+			"dry-eq_1-nvt.nc",
+			"dry-eq_2-npt.nc",
+			"dry-eq_3-nvt.nc",
+			"dry-eq_4-npt.nc",
+			"dry-eq_5-nvt.nc",
+			"dry-eq_6-npt.nc",
+			"dry-eq_7-nvt.nc",
+			"dry-eq_8-npt.nc",
+			"dry-eq_9-nvt.nc",
+			"dry-eq_10-npt.nc",
+			"dry-eq_11-nvt.nc",
+			"dry-eq_12-npt.nc",
+			"dry-eq_13-nvt-pr.nc",
+		]
+		ncrst_file = "dry-eq_13-nvt-pr.ncrst"
+	
+	else:
+		raise ValueError(f"Unknown dry equilibration protocol: {dry_eq_prot}")
 
-	ncrst_file = "dry-eq_7-nvt-pr.ncrst"
 	prmtop_file = f"{system_tag}.prmtop"
 	pdb_file = f"{system_tag}_dry-eq_last.pdb"
 	merged_pdb = f"{system_tag}_dry-eq.pdb"
@@ -1454,7 +1527,7 @@ def prepare_hydration_inputs(dry_pdb_file):
 		"hyd-eq_4-npt.in",
 		"hyd-eq_5-nvt-pr.in",
 	]:
-		shutil.copy(os.path.join(input_dir, inputs), hyd_eq_dir)
+		shutil.copy(os.path.join(hyd_eq_input_dir, inputs), hyd_eq_dir)
 
 def run_hydration_workflow(dry_pdb_file, nproc):
 	os.chdir(hyd_eq_dir)
@@ -1566,20 +1639,20 @@ def run_hydration_workflow(dry_pdb_file, nproc):
 		os.chdir(hyd_eq_dir)
 
 def prepare_conductivity_inputs():
-	os.makedirs(cond_dir, exist_ok=True)
+	os.makedirs(cond_pr_dir, exist_ok=True)
 
 	for h3o_files in [
 		"h3o.pdb",
 		"h3o.frcmod",
 		"h3o.prepi", 
 	]:
-		shutil.copy(os.path.join(input_dir, h3o_files), cond_dir)
+		shutil.copy(os.path.join(input_dir, h3o_files), cond_pr_dir)
 	
 	for fname in [
 		"cond_0-min.in",
 		"cond_pr-nvt.in",
 	]:
-		shutil.copy(os.path.join(input_dir, fname), cond_dir)
+		shutil.copy(os.path.join(cond_pr_input_dir, fname), cond_pr_dir)
 	
 	for params in [
 		"h_so3.prepi",
@@ -1587,21 +1660,21 @@ def prepare_conductivity_inputs():
 		f"{polymer}_m_so3.prepi",
 		f"{polymer}_so3_gaff2.frcmod",
 	]:
-		shutil.copy(os.path.join(init_dir, params), cond_dir)
+		shutil.copy(os.path.join(init_dir, params), cond_pr_dir)
 
 def run_conductivity_workflow(nproc, chain_lengths):
 	for lam in cond_lam_list:	 
-		lam_cond_dir = os.path.join(cond_dir, f"{lam}_h3o-h2o")
-		lam_cond_init_dir = os.path.join(lam_cond_dir, "init")
-		lam_cond_md_dir = os.path.join(lam_cond_dir, "md")
+		lam_cond_pr_dir = os.path.join(cond_pr_dir, f"{lam}_h3o-h2o")
+		lam_cond_init_dir = os.path.join(lam_cond_pr_dir, "init")
+		lam_cond_md_dir = os.path.join(lam_cond_pr_dir, "md")
 		
-		os.makedirs(lam_cond_dir, exist_ok=True)
+		os.makedirs(lam_cond_pr_dir, exist_ok=True)
 		os.makedirs(lam_cond_init_dir, exist_ok=True)
 		os.makedirs(lam_cond_md_dir, exist_ok=True)
 		
 		hyd_tag = hyd_system_name(polymer, chain_length, num_chains, lam, mix_chains)
 		hyd_pdb = f"{hyd_tag}_hyd-eq_last.pdb"
-		shutil.copy(os.path.join(hyd_eq_dir, hyd_pdb), lam_cond_dir)
+		shutil.copy(os.path.join(hyd_eq_dir, hyd_pdb), lam_cond_pr_dir)
 		
 		for fname in [
 			"h_so3.prepi",
@@ -1614,9 +1687,9 @@ def run_conductivity_workflow(nproc, chain_lengths):
 			"cond_0-min.in",
 			"cond_pr-nvt.in"
 		]:
-			shutil.copy(os.path.join(cond_dir, fname), lam_cond_dir)
+			shutil.copy(os.path.join(cond_pr_dir, fname), lam_cond_pr_dir)
 		
-		os.chdir(lam_cond_dir)
+		os.chdir(lam_cond_pr_dir)
 		hyd_pdb_file = read(hyd_pdb)
 		cell = hyd_pdb_file.cell
 		a, b, c = cell.lengths()
