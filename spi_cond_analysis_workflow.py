@@ -34,9 +34,21 @@ run_dry_analysis = True
 run_hyd_analysis = False
 run_cond_analysis = False
 
-# dry pr-nvt trajectory
-dry_traj_file = "dry-eq_7-nvt-pr.nc"
-dry_restart_file = "dry-eq_7-nvt-pr.ncrst"
+# Dry equilibration protocol
+# "6-step" or "12-step"
+dry_eq_prot = "6-step"
+
+# Dry production trajectory is selected automatically from dry_eq_prot
+def dry_production_files(protocol):
+	if protocol == "6-step":
+		return "dry-eq_7-nvt-pr.nc", "dry-eq_7-nvt-pr.ncrst"
+
+	if protocol == "12-step":
+		return "dry-eq_13-nvt-pr.nc", "dry-eq_13-nvt-pr.ncrst"
+
+	raise ValueError("dry_eq_prot must be '6-step' or '12-step'")
+
+dry_traj_file, dry_restart_file = dry_production_files(dry_eq_prot)
 
 # frame selection for dry pr-nvt trajectory
 frame_start = 1
@@ -87,7 +99,6 @@ base_dir = os.getcwd()
 #	  dry/
 
 simulation_dir = os.path.join(base_dir, "run")
-init_dir = os.path.join(simulation_dir, "init")
 dry_eq_dir = os.path.join(simulation_dir, "dry_eq")
 hyd_eq_dir = os.path.join(simulation_dir, "hyd_eq")
 cond_pr_dir = os.path.join(simulation_dir, "cond_pr")
@@ -104,7 +115,7 @@ output = os.path.join(base_dir, "spi_cond_analysis_workflow_process.txt")
 # ====
 
 def log_message(message):
-	with open(output, "a") as f:
+	with open(output, "a", encoding="utf-8") as f:
 		print(message, file=f)
 
 def ensure_directories():
@@ -138,7 +149,10 @@ def find_prmtop(stage_dir):
 
 def run_command(command):
 	log_message(f"Running command: {command}")
-	subprocess.run(command, shell=True, check=True)
+	command_log = os.path.join(analysis_dir, "analysis_command.log")
+	with open(command_log, "a", encoding="utf-8") as log:
+		log.write(f"\n\n$ {command}\n")
+		subprocess.run(command,shell=True,check=True,stdout=log,stderr=log)
 
 def is_atom_line(line):
 	return line.startswith("ATOM") or line.startswith("HETATM")
@@ -232,16 +246,16 @@ def get_first_n_per_residue(chain_atoms, chain_lines):
 
 	return first_n_indices
 
-def get_chain_terminal_n_atom_indices(pdb_file):
+def get_monomer_unit_n_atom_pairs(pdb_file):
 	lines = load_first_model_atom_lines(pdb_file)
 
-	chain_n_indices = []
+	monomer_pairs = []
 	current_n_by_residue = {}
 	global_atom_idx = -1
 
 	def flush_chain(current_n_by_residue):
 		if len(current_n_by_residue) == 0:
-			return None
+			return []
 
 		ordered_resids = sorted(
 			current_n_by_residue.keys(),
@@ -250,16 +264,15 @@ def get_chain_terminal_n_atom_indices(pdb_file):
 
 		n_indices = [current_n_by_residue[r][0] for r in ordered_resids]
 
-		if len(n_indices) >= 2:
-			return (n_indices[0], n_indices[-1])
+		pairs = []
+		for i in range(len(n_indices) - 1):
+			pairs.append((n_indices[i], n_indices[i + 1]))
 
-		return None
+		return pairs
 
 	for line in lines:
 		if line.startswith("TER"):
-			pair = flush_chain(current_n_by_residue)
-			if pair is not None:
-				chain_n_indices.append(pair)
+			monomer_pairs.extend(flush_chain(current_n_by_residue))
 			current_n_by_residue = {}
 			continue
 
@@ -278,15 +291,13 @@ def get_chain_terminal_n_atom_indices(pdb_file):
 		resid = line[22:26].strip()
 		current_n_by_residue.setdefault(resid, []).append(global_atom_idx)
 
-	pair = flush_chain(current_n_by_residue)
-	if pair is not None:
-		chain_n_indices.append(pair)
+	monomer_pairs.extend(flush_chain(current_n_by_residue))
 
-	if len(chain_n_indices) == 0:
-		raise RuntimeError("Could not identify terminal N atom pairs for S2 analysis.")
+	if len(monomer_pairs) == 0:
+		raise RuntimeError("Could not identify monomer-unit N-N atom pairs for S2 analysis.")
 
-	return chain_n_indices
-
+	return monomer_pairs
+	
 def nematic_order_from_unit_vectors(unit_vectors):
 	if len(unit_vectors) == 0:
 		return np.nan
@@ -368,6 +379,9 @@ class Dry_TrajectoryPreparation:
 			log_message("\tDry sampled PDB already exists. Skipping cpptraj.")
 			return self.sampled_pdb
 
+		for old_file in glob.glob(f"{self.tmp_prefix}*"):
+			os.remove(old_file)
+
 		with open(self.cpptraj_input, "w") as f:
 			f.write(f"trajin {self.traj_file} {frame_start} {frame_stop} {frame_stride}\n")
 			f.write("autoimage\n")
@@ -376,10 +390,17 @@ class Dry_TrajectoryPreparation:
 		cpptraj_command = f"cpptraj -i {self.cpptraj_input} -p {self.prmtop_file}"
 		run_command(cpptraj_command)
 
-		tmp_files = sorted(glob.glob(f"{self.tmp_prefix}*.pdb"))
+		tmp_files = sorted(
+			glob.glob(f"{self.tmp_prefix}.pdb*"),
+			key=lambda x: int(x.split(".")[-1]) if x.split(".")[-1].isdigit() else 0
+		)
 
 		if len(tmp_files) == 0:
-			raise RuntimeError("cpptraj did not create sampled PDB files.")
+			raise RuntimeError(
+				"cpptraj did not create sampled PDB files.\n"
+				f"Expected files matching: {self.tmp_prefix}.pdb*\n"
+				f"Check cpptraj input file: {self.cpptraj_input}"
+			)
 
 		with open(self.sampled_pdb, "w") as outfile:
 			for pdb_file in tmp_files:
@@ -461,7 +482,7 @@ class Dry_RDFAnalysis:
 
 		plt.figure(figsize=(7, 5))
 		plt.plot(df["r_A"], df[pair])
-		plt.xlabel("r [Å]")
+		plt.xlabel("r [A]")
 		plt.ylabel(f"g$_{{{pair}}}$(r)")
 		plt.title(f"{self.system_tag}: {pair} RDF")
 		plt.tight_layout()
@@ -494,7 +515,7 @@ class Dry_RDFAnalysis:
 		if len(filtered_df) == 0:
 			log_message(
 				f"\tWarning: no {pair} RDF points found between "
-				f"{r_min:.3f} and {r_max:.3f} Å. Falling back to global peak."
+				f"{r_min:.3f} and {r_max:.3f} A. Falling back to global peak."
 			)
 			return self.find_global_rdf_peak(rdf_csv, pair)
 
@@ -524,7 +545,7 @@ class Dry_RDFAnalysis:
 
 				log_message(
 					f"\t{pair} RDF monomer-unit peak searched in "
-					f"{r_min:.3f}–{r_max:.3f} Å"
+					f"{r_min:.3f}–{r_max:.3f} A"
 				)
 
 			else:
@@ -532,6 +553,236 @@ class Dry_RDFAnalysis:
 
 			rdf_peak_results[pair] = (r_peak, g_peak)
 
-			log_message(f"\t{pair} RDF peak: r = {r_peak:.3f} Å, g = {g_peak:.3f}")
+			log_message(f"\t{pair} RDF peak: r = {r_peak:.3f} A, g = {g_peak:.3f}")
 
 		return rdf_peak_results
+
+class Dry_DensityAnalysis:
+	def __init__(self, last_pdb):
+		self.last_pdb = last_pdb
+
+	def calculate_density(self):
+		atoms = read(self.last_pdb)
+
+		volume_a3 = atoms.get_volume()
+		if volume_a3 <= 0:
+			return np.nan
+
+		total_mass_amu = sum(
+			molecular_weights.get(atom.symbol, 0.0)
+			for atom in atoms
+		)
+
+		density = (total_mass_amu * amu_to_g) / (volume_a3 * angstrom3_to_cm3)
+
+		log_message(f"\tDry density calculated: {density:.3f} g/cm3")
+		return float(density)
+
+class Dry_MonomerAnalysis:
+	def __init__(self, last_pdb):
+		self.last_pdb = last_pdb
+
+	def calculate_monomer_nn_distance(self):
+		chain_blocks = load_chain_line_blocks_from_first_model(self.last_pdb)
+
+		all_distances = []
+
+		for chain_lines in chain_blocks:
+			chain_atoms = atoms_from_pdb_lines(chain_lines)
+			first_n_indices = get_first_n_per_residue(chain_atoms, chain_lines)
+
+			for i in range(len(first_n_indices) - 1):
+				d = chain_atoms.get_distance(
+					first_n_indices[i],
+					first_n_indices[i + 1],
+					mic=False
+				)
+				all_distances.append(float(d))
+
+		if len(all_distances) == 0:
+			return np.nan, np.nan
+
+		mean_dist = float(np.mean(all_distances))
+		std_dist = float(np.std(all_distances, ddof=0))
+
+		log_message(f"\tMonomer N-N distance mean: {mean_dist:.3f} A")
+		log_message(f"\tMonomer N-N distance std: {std_dist:.3f} A")
+
+		return mean_dist, std_dist
+
+class Dry_NematicOrderAnalysis:
+	def __init__(self, sampled_pdb, system_tag):
+		self.sampled_pdb = sampled_pdb
+		self.system_tag = system_tag
+
+	def calculate_s2(self):
+		monomer_n_pairs = get_monomer_unit_n_atom_pairs(self.sampled_pdb)
+
+		frames = read(self.sampled_pdb, index=":")
+		if not isinstance(frames, list):
+			frames = [frames]
+
+		rows = []
+
+		for frame_i, atoms in enumerate(frames):
+			vectors = []
+
+			for first_idx, last_idx in monomer_n_pairs:
+				try:
+					vec = atoms.get_distance(
+						first_idx,
+						last_idx,
+						mic=True,
+						vector=True
+					)
+				except Exception:
+					vec = atoms.positions[last_idx] - atoms.positions[first_idx]
+
+				norm = np.linalg.norm(vec)
+
+				if norm > 1.0e-12:
+					vectors.append(vec / norm)
+
+			S2 = nematic_order_from_unit_vectors(vectors)
+
+			rows.append({
+				"frame": frame_i,
+				"S2": S2,
+				"num_monomer_unit_vectors": len(vectors)
+			})
+
+		df = pd.DataFrame(rows)
+
+		s2_csv = os.path.join(dry_analysis_dir, "s2_nematic.csv")
+		s2_png = os.path.join(dry_analysis_dir, "s2_nematic.png")
+
+		df.to_csv(s2_csv, index=False)
+
+		plt.figure(figsize=(7, 5))
+		plt.plot(df["frame"], df["S2"], marker="o")
+		plt.xlabel("sampled frame index")
+		plt.ylabel("S2")
+		plt.title(f"{self.system_tag}: dry monomer-unit nematic order")
+		plt.tight_layout()
+		plt.savefig(s2_png, dpi=300)
+		plt.close()
+
+		S2_mean = float(df["S2"].mean()) if len(df) > 0 else np.nan
+		S2_std = float(df["S2"].std(ddof=0)) if len(df) > 1 else 0.0
+
+		log_message(f"\tDry monomer-unit S2 mean: {S2_mean:.3f}")
+		log_message(f"\tDry monomer-unit S2 std: {S2_std:.3f}")
+
+		return S2_mean, S2_std
+
+class Dry_SummaryWriter:
+	def __init__(self, system_tag):
+		self.system_tag = system_tag
+
+	def write_summary(
+		self,
+		density,
+		nn_mean,
+		nn_std,
+		S2_mean,
+		S2_std,
+		rdf_peak_results
+	):
+		row = {
+			"system_tag": self.system_tag,
+			"polymer": polymer,
+			"stage": "dry",
+			"chain_length": chain_length,
+			"num_chains": num_chains,
+			"mix_chains": mix_chains,
+			"aligned": aligned,
+			"conf_selection": conf_selection,
+			"run_id": run_id,
+			"dry_eq_prot": dry_eq_prot,
+			"trajectory": dry_traj_file,
+			"restart": dry_restart_file,
+			"frame_start": frame_start,
+			"frame_stop": frame_stop,
+			"frame_stride": frame_stride,
+			"density_g_cm3": density,
+			"S2_mean": S2_mean,
+			"S2_std": S2_std,
+			"N_N_monomer_distance_mean_A": nn_mean,
+			"N_N_monomer_distance_std_A": nn_std,
+		}
+
+		for pair, values in rdf_peak_results.items():
+			r_peak, g_peak = values
+			key = pair.replace("-", "_")
+			row[f"r_{key}_peak_A"] = r_peak
+			row[f"g_{key}_peak"] = g_peak
+
+		df = pd.DataFrame([row])
+
+		summary_csv = os.path.join(dry_analysis_dir, "dry_summary.csv")
+		df.to_csv(summary_csv, index=False)
+
+		log_message("\tDry summary written")
+		return df
+
+# ====
+# Workflow functions
+# ====
+
+def run_dry_analysis_workflow():
+	system_tag = system_name(polymer, chain_length, num_chains, mix_chains)
+
+	prmtop_file = find_prmtop(dry_eq_dir)
+
+	validate_dry_inputs(prmtop_file)
+	log_settings(system_tag, prmtop_file)
+
+	log_message("Dry analysis workflow started")
+
+	traj_prep = Dry_TrajectoryPreparation(prmtop_file)
+	last_pdb = traj_prep.create_last_pdb()
+	sampled_pdb = traj_prep.create_sampled_pdb()
+
+	density_analysis = Dry_DensityAnalysis(last_pdb)
+	density = density_analysis.calculate_density()
+	monomer_analysis = Dry_MonomerAnalysis(last_pdb)
+	nn_mean, nn_std = monomer_analysis.calculate_monomer_nn_distance()
+
+	rdf_analysis = Dry_RDFAnalysis(sampled_pdb, system_tag)
+	rdf_peak_results = rdf_analysis.run_all_rdf(nn_mean, nn_std)
+
+	nematic_analysis = Dry_NematicOrderAnalysis(sampled_pdb, system_tag)
+	S2_mean, S2_std = nematic_analysis.calculate_s2()
+
+	summary_writer = Dry_SummaryWriter(system_tag)
+	summary = summary_writer.write_summary(
+		density,
+		nn_mean,
+		nn_std,
+		S2_mean,
+		S2_std,
+		rdf_peak_results
+	)
+
+	log_message("Dry analysis workflow finished")
+
+	return summary
+
+# ====
+# Main workflow
+# ====
+
+def run_workflow():
+	ensure_directories()
+
+	if run_dry_analysis:
+		run_dry_analysis_workflow()
+
+	if run_hyd_analysis:
+		log_message("Hydrated analysis is not implemented yet")
+
+	if run_cond_analysis:
+		log_message("Conductivity analysis is not implemented yet")
+
+if __name__ == "__main__":
+	run_workflow()
