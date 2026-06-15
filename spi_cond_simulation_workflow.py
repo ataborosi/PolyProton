@@ -45,10 +45,11 @@ backbone_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
 sidechain_smiles = "OCCCS(O)(=O)=O"
 benzene_smiles = "C1=CC=CC=C1"
 
-conf_num = 5
+conf_num = 50
 conf_selection = "best"			 # "best" or "random"
 temperature = 300
 conf_far_fraction = 0.5
+conf_prune_rms_thresh = 0.02	 # use -1.0 to disable pruning
 
 chain_length = 15
 num_chains = 30
@@ -64,9 +65,9 @@ dry_eq_prot = "6-step" # "6-step" or "12-step"
 use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
 
 run_param = True
-run_dry = True
-run_hyd = True
-run_cond = True
+run_dry = False
+run_hyd = False
+run_cond = False
 
 # ====
 # Paths / Folders
@@ -103,10 +104,6 @@ def ensure_directories():
 	os.makedirs(hyd_eq_dir, exist_ok=True)
 	os.makedirs(cond_pr_dir, exist_ok=True)
 
-def copy_connectivity_cards():
-	for cards in ["head", "main", "tail", "head_so3", "main_so3", "tail_so3"]:
-		shutil.copy(os.path.join(input_dir, cards), init_dir)
-
 def select_conformer(conf_file, conf_sel="best", far_fraction=0.5):
 	df = pd.read_csv(conf_file, delim_whitespace=True)
 	best_conf = int(df.iloc[0]["conf_i"])
@@ -130,6 +127,28 @@ def select_conformer(conf_file, conf_sel="best", far_fraction=0.5):
 		return int(random.choice(far_pool["conf_i"].tolist()))
 
 	raise ValueError("conf_sel must be either 'best' or 'random'")
+
+def get_generated_conf_indices(polymer):
+	xyz_files = sorted(glob.glob(f"{polymer}_*.xyz"))
+	conf_indices = []
+
+	for xyz_file in xyz_files:
+		base = os.path.splitext(os.path.basename(xyz_file))[0]
+
+		if "_opt" in base:
+			continue
+
+		parts = base.split("_")
+		if len(parts) < 2:
+			continue
+
+		try:
+			conf_i = int(parts[-1])
+			conf_indices.append(conf_i)
+		except ValueError:
+			continue
+
+	return sorted(set(conf_indices))
 
 def generate_chain_lengths(chain_length, num_chains, mix_chains=False, seed=42):
 	if not mix_chains:
@@ -196,9 +215,29 @@ def validate_settings():
 		if lam not in lam_list:
 			raise ValueError(f"cond lambda {lam} not found in lam_list")
 
+def write_anchor_indices(polymer, anchor_indices):
+	with open(f"{polymer}_anchors.txt", "w") as f:
+		for idx in anchor_indices:
+			f.write(f"{idx}\n")
+
+def read_anchor_indices(polymer):
+	anchor_file = f"{polymer}_anchors.txt"
+	if not os.path.exists(anchor_file):
+		raise FileNotFoundError(f"Anchor index file not found: {anchor_file}")
+
+	with open(anchor_file, "r") as f:
+		indices = [int(line.strip()) for line in f if line.strip()]
+
+	if len(indices) != 2:
+		raise ValueError(f"Expected 2 anchor indices in {anchor_file}, got {indices}")
+
+	return indices			  
+
 def log_settings(chain_lengths, system_tag, nproc):
 	log_message(f"Processing polymer: {polymer} with backbone: {backbone_smiles}")
 	log_message(f"\tconf_selection = {conf_selection}")
+	log_message(f"\tconf_num = {conf_num}")
+	log_message(f"\tconf_prune_rms_thresh = {conf_prune_rms_thresh}")
 	log_message(f"\tchain_length = {chain_length}")
 	log_message(f"\tnum_chains = {num_chains}")
 	log_message(f"\tmix_chains = {mix_chains}")
@@ -506,6 +545,7 @@ class MonomerBuilder:
 		self.final_conf = None
 		self.cids = []
 		self.conf_num = conf_num
+		self.chain_anchor_indices = None
 	
 	def create_backbone(self):
 		backbone = Chem.MolFromSmiles(self.backbone_smiles)
@@ -536,33 +576,106 @@ class MonomerBuilder:
 		ed_final = Chem.EditableMol(final)
 		ed_final.AddBond(4, Nidx[1], Chem.BondType.SINGLE)
 		final = ed_final.GetMol()
+		
 		Chem.SanitizeMol(final)
 		self.final_conf = Chem.AddHs(final)
 	
+		self.chain_anchor_indices = self.find_chain_anchor_indices()
+		write_anchor_indices(self.polymer, self.chain_anchor_indices)	 
+
+	def find_chain_anchor_indices(self):
+		mol = self.final_conf
+		rings = [list(r) for r in mol.GetRingInfo().AtomRings()]
+		anchors = []
+	
+		for ring in rings:
+			if len(ring) != 6:
+				continue
+	
+			ring_set = set(ring)
+	
+			if not all(
+				mol.GetAtomWithIdx(i).GetSymbol() == "C" and mol.GetAtomWithIdx(i).GetIsAromatic()
+				for i in ring
+			):
+				continue
+	
+			n_connected_idx = None
+	
+			for idx in ring:
+				atom = mol.GetAtomWithIdx(idx)
+				for nbr in atom.GetNeighbors():
+					nbr_idx = nbr.GetIdx()
+					if nbr_idx in ring_set:
+						continue
+					if nbr.GetSymbol() == "N":
+						n_connected_idx = idx
+						break
+				if n_connected_idx is not None:
+					break
+	
+			if n_connected_idx is None:
+				continue
+	
+			pos = ring.index(n_connected_idx)
+			para_idx = ring[(pos + 3) % 6]
+			anchors.append(para_idx)
+	
+		anchors = sorted(set(anchors))
+	
+		if len(anchors) != 2:
+			raise RuntimeError(f"Could not identify exactly two para anchor carbons. Found: {anchors}")
+	
+		return anchors
+	
 	def create_conformations(self):
 		params = Chem.rdDistGeom.srETKDGv3()
-		params.pruneRmsThresh = 0.1
-		params.clearConfs=True
+		params.pruneRmsThresh = conf_prune_rms_thresh
+		params.clearConfs = True
 		params.numThreads = 0
 		
-		self.cids = Chem.rdDistGeom.EmbedMultipleConfs(self.final_conf, numConfs=self.conf_num, params=params)
-		
-		atom_map = [1, 15]
+		self.cids = Chem.rdDistGeom.EmbedMultipleConfs(
+			self.final_conf,
+			numConfs=self.conf_num,
+			params=params
+		)
+	
+		actual_conf_num = len(self.cids)
+	
+		log_message(f"\tRequested conformers = {self.conf_num}")
+		log_message(f"\tGenerated conformers = {actual_conf_num}")
+		log_message(f"\tConformer pruning RMS threshold = {conf_prune_rms_thresh}")
+	
+		if actual_conf_num < self.conf_num:
+			log_message(
+				f"\tWarning: RDKit generated fewer conformers than requested "
+				f"({actual_conf_num} / {self.conf_num})."
+			)
+	
+		atom_map = self.chain_anchor_indices
 		Chem.rdMolAlign.AlignMolConformers(self.final_conf, atomIds=atom_map, maxIters=100000)
+	
 		for i, cid in enumerate(self.cids):
 			Chem.MolToXYZFile(self.final_conf, f'{self.polymer}_{i}.xyz', confId=cid)
 
 class ConformationAnalysis:
-	def __init__(self, polymer, conf_num, calculator):
+	def __init__(self, polymer, calculator):
 		self.polymer = polymer
-		self.conf_num = conf_num
 		self.calculator = calculator
+		self.fix_indices = read_anchor_indices(polymer)
 		
 	def optimize_confomer(self):
-		for conf_i in range(self.conf_num):
-			mol = read(f"{self.polymer}_{conf_i}.xyz")
-			fix = [1, 15]
-			mol.set_constraint(FixAtoms(indices=list(set(fix))))
+		conf_indices = get_generated_conf_indices(self.polymer)
+
+		if len(conf_indices) == 0:
+			raise RuntimeError(f"No generated conformer xyz files found for {self.polymer}")
+
+		log_message(f"\tOptimizing {len(conf_indices)} generated conformers")
+
+		for conf_i in conf_indices:
+			xyz_file = f"{self.polymer}_{conf_i}.xyz"
+			mol = read(xyz_file)
+			mol.set_constraint(FixAtoms(indices=list(set(self.fix_indices))))
 			mol.set_calculator(self.calculator)
 			
 			opt = LBFGS(mol, logfile=f"{self.polymer}_{conf_i}_opt.txt")
@@ -570,25 +683,34 @@ class ConformationAnalysis:
 			write(f"{self.polymer}_{conf_i}_opt.xyz", mol, format='xyz')
 
 class ConformationAnalyzer:
-	def __init__ (self, polymer, conf_num, output_file, temperature):
+	def __init__(self, polymer, output_file, temperature):
 		self.polymer = polymer
-		self.conf_num = conf_num
 		self.output_file = output_file
 		self.temperature = temperature
 		
 	def analyze_conformers(self):
+		opt_files = sorted(glob.glob(f"{self.polymer}_*_opt.txt"))
 		dfs = []
-		for conf_i in range(self.conf_num):
-			file_opt = f"{self.polymer}_{conf_i}_opt.txt"
+
+		if len(opt_files) == 0:
+			raise RuntimeError(f"No optimized conformer log files found for {self.polymer}")
+
+		log_message(f"\tAnalyzing {len(opt_files)} optimized conformers")
+
+		for file_opt in opt_files:
+			base = os.path.splitext(os.path.basename(file_opt))[0]
+			conf_i = int(base.split("_")[1])
+
 			with open(file_opt) as f:
 				last_line = f.readlines()[-1]
 				columns = last_line.split()
 				E = float(columns[3].rstrip('*'))
 				E = round(E, 4)
-			df_temp = pd.DataFrame({'conf_i': [str(conf_i)], 'E': E})
+
+			df_temp = pd.DataFrame({'conf_i': [conf_i], 'E': [E]})
 			dfs.append(df_temp)
 		
-		df = pd.concat(dfs, ignore_index = True)
+		df = pd.concat(dfs, ignore_index=True)
 		
 		min_E = df['E'].min()
 		df['ΔE'] = df['E'] - min_E
@@ -693,33 +815,153 @@ class GAFF2Param:
 		with open(modified_mol2_file, 'w') as f:
 			f.writelines(mol2_lines[:atom_start + 1] + atom_lines_modified + mol2_lines[bond_start:])
 
+	def parse_mol2_atoms_bonds(self, mol2_file):
+		with open(mol2_file, "r") as f:
+			lines = f.readlines()
+
+		atoms = []
+		bonds = []
+
+		in_atom = False
+		in_bond = False
+
+		for line in lines:
+			if line.startswith("@<TRIPOS>ATOM"):
+				in_atom = True
+				in_bond = False
+				continue
+			elif line.startswith("@<TRIPOS>BOND"):
+				in_atom = False
+				in_bond = True
+				continue
+			elif line.startswith("@<TRIPOS>"):
+				in_atom = False
+				in_bond = False
+				continue
+
+			if in_atom and line.strip():
+				parts = line.split()
+				atoms.append({
+					"id": int(parts[0]),
+					"name": parts[1],
+					"type": parts[5],
+				})
+
+			if in_bond and line.strip():
+				parts = line.split()
+				bonds.append((int(parts[1]), int(parts[2])))
+
+		return atoms, bonds
+
+	def get_anchor_atom_names_and_hydrogens(self, mol2_file):
+		anchor_indices = read_anchor_indices(self.polymer)	 # 0-based
+		atoms, bonds = self.parse_mol2_atoms_bonds(mol2_file)
+
+		id_to_atom = {atom["id"]: atom for atom in atoms}
+		neighbors = {}
+
+		for a, b in bonds:
+			neighbors.setdefault(a, []).append(b)
+			neighbors.setdefault(b, []).append(a)
+
+		anchor_data = []
+
+		for anchor_idx in anchor_indices:
+			atom_id = anchor_idx + 1
+			atom_name = id_to_atom[atom_id]["name"]
+
+			h_neighbors = []
+			for nbr in neighbors.get(atom_id, []):
+				nbr_atom = id_to_atom[nbr]
+				if nbr_atom["name"].startswith("H"):
+					h_neighbors.append(nbr_atom["name"])
+
+			if len(h_neighbors) != 1:
+				raise RuntimeError(
+					f"Expected exactly one H bonded to anchor atom {atom_name} in {mol2_file}, got {h_neighbors}"
+				)
+
+			anchor_data.append((atom_id, atom_name, h_neighbors[0]))
+
+		anchor_data.sort(key=lambda x: x[0])
+
+		head_atom_name = anchor_data[0][1]
+		head_h_name = anchor_data[0][2]
+		tail_atom_name = anchor_data[1][1]
+		tail_h_name = anchor_data[1][2]
+
+		return head_atom_name, head_h_name, tail_atom_name, tail_h_name
+
+	def write_connectivity_cards(self, mol2_file, so3=False):
+		head_atom_name, head_h_name, tail_atom_name, tail_h_name = self.get_anchor_atom_names_and_hydrogens(mol2_file)
+
+		if so3:
+			head_file = "head_so3.card"
+			main_file = "main_so3.card"
+			tail_file = "tail_so3.card"
+		else:
+			head_file = "head.card"
+			main_file = "main.card"
+			tail_file = "tail.card"
+
+		with open(head_file, "w") as f:
+			f.write(f"TAIL_NAME {tail_atom_name}\n")
+			f.write(f"OMIT_NAME {tail_h_name}\n")
+			f.write("POST_TAIL_TYPE c3\n")
+			f.write("CHARGE 0.0\n")
+
+		with open(main_file, "w") as f:
+			f.write(f"HEAD_NAME {head_atom_name}\n")
+			f.write(f"TAIL_NAME {tail_atom_name}\n")
+			f.write(f"OMIT_NAME {head_h_name}\n")
+			f.write(f"OMIT_NAME {tail_h_name}\n")
+			f.write("PRE_HEAD_TYPE c3\n")
+			f.write("POST_TAIL_TYPE c3\n")
+			f.write("CHARGE 0.0\n")
+
+		with open(tail_file, "w") as f:
+			f.write(f"HEAD_NAME {head_atom_name}\n")
+			f.write(f"OMIT_NAME {head_h_name}\n")
+			f.write("PRE_HEAD_TYPE c3\n")
+			f.write("CHARGE 0.0\n")
+
 	def run_antechamber_v1(self):
 		antechamber_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_mod.mol2 -fi mol2 -o {self.polymer}_gaff2.mol2 -fo mol2 -at gaff2'
 		subprocess.run(antechamber_command_1, shell=True, check=True)
+
 		antechamber_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_gaff2.mol2 -fi mol2 -o {self.polymer}.ac -fo ac'
 		subprocess.run(antechamber_command_2, shell=True, check=True)
+
 		antechamber_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/parmchk2 -i {self.polymer}_gaff2.mol2 -f mol2 -o {self.polymer}_gaff2.frcmod -s 2'
-		subprocess.run(antechamber_command_3, shell=True, check=True)	
-		prepgen_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o {self.polymer}_m.prepi -f prepi -m main -rn {self.polymer}'
+		subprocess.run(antechamber_command_3, shell=True, check=True)
+
+		self.write_connectivity_cards(f"{self.polymer}_gaff2.mol2", so3=False)
+
+		prepgen_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o {self.polymer}_m.prepi -f prepi -m main.card -rn {self.polymer}'
+		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o h.prepi -f prepi -m head.card -rn H'
+		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o t.prepi -f prepi -m tail.card -rn T'
+
 		subprocess.run(prepgen_command_1, shell=True, check=True)
-		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o h.prepi -f prepi -m head -rn H'
-		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o t.prepi -f prepi -m tail -rn T'
-		
 		subprocess.run(prepgen_command_2, shell=True, check=True)
 		subprocess.run(prepgen_command_3, shell=True, check=True)
 
 	def run_antechamber_v2(self):
 		antechamber_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_so3_mod.mol2 -fi mol2 -o {self.polymer}_so3_gaff2.mol2 -fo mol2 -at gaff2'
 		subprocess.run(antechamber_command_1, shell=True, check=True)
+
 		antechamber_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_so3_gaff2.mol2 -fi mol2 -o {self.polymer}_so3.ac -fo ac'
 		subprocess.run(antechamber_command_2, shell=True, check=True)
+
 		antechamber_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/parmchk2 -i {self.polymer}_so3_gaff2.mol2 -f mol2 -o {self.polymer}_so3_gaff2.frcmod -s 2'
-		subprocess.run(antechamber_command_3, shell=True, check=True)	
-		prepgen_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o {self.polymer}_m_so3.prepi -f prepi -m main_so3 -rn {self.polymer}'
+		subprocess.run(antechamber_command_3, shell=True, check=True)
+
+		self.write_connectivity_cards(f"{self.polymer}_so3_gaff2.mol2", so3=True)
+
+		prepgen_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o {self.polymer}_m_so3.prepi -f prepi -m main_so3.card -rn {self.polymer}'
+		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o h_so3.prepi -f prepi -m head_so3.card -rn H'
+		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o t_so3.prepi -f prepi -m tail_so3.card -rn T'
+
 		subprocess.run(prepgen_command_1, shell=True, check=True)
-		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o h_so3.prepi -f prepi -m head_so3 -rn H'
-		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o t_so3.prepi -f prepi -m tail_so3 -rn T'
-		
 		subprocess.run(prepgen_command_2, shell=True, check=True)
 		subprocess.run(prepgen_command_3, shell=True, check=True)
 
@@ -1378,11 +1620,11 @@ def build_monomer_and_conformers():
 	log_message("\tMonomer building and conformer creation finished")
 
 def optimize_and_rank_conformers(conf_output_file):
-	conformation_analysis = ConformationAnalysis(polymer, conf_num, nnp_calc)
+	conformation_analysis = ConformationAnalysis(polymer, nnp_calc)
 	conformation_analysis.optimize_confomer()
 	log_message("\tConformation analysis finished")
-
-	analyzer = ConformationAnalyzer(polymer, conf_num, conf_output_file, temperature)
+	
+	analyzer = ConformationAnalyzer(polymer, conf_output_file, temperature)
 	analyzer.analyze_conformers()
 	log_message("\tEvaluation of conformers finished")
 
@@ -1753,7 +1995,6 @@ def run_conductivity_workflow(nproc, chain_lengths):
 def run_workflow():
 	validate_settings()
 	ensure_directories()
-	copy_connectivity_cards()
 
 	os.chdir(init_dir)
 
