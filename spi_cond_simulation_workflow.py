@@ -250,6 +250,67 @@ def log_settings(chain_lengths, system_tag, nproc):
 	log_message(f"\tnproc = {nproc}")
 	log_message(f"\tuse_gpu = {use_gpu}")
 
+PDB_CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+def sanitize_pdb_for_tleap(input_pdb, output_pdb=None):
+	if output_pdb is None:
+		output_pdb = input_pdb
+
+	with open(input_pdb, "r") as f:
+		lines = f.readlines()
+
+	new_lines = []
+	atom_serial = 1
+	last_res_key = None
+	new_resseq = 0
+	chain_idx = 0
+
+	for line in lines:
+		if not line.startswith(("ATOM", "HETATM")):
+			new_lines.append(line)
+			continue
+
+		# original residue identity as it appears in the file
+		orig_res_key = (
+			line[17:20],  # resname
+			line[21],	  # chain
+			line[22:26],  # resseq
+			line[26],	  # insertion code
+		)
+
+		# start a new renumbered residue when the original residue changes
+		if orig_res_key != last_res_key:
+			new_resseq += 1
+			last_res_key = orig_res_key
+
+			if new_resseq > 9999:
+				new_resseq = 1
+				chain_idx += 1
+				if chain_idx >= len(PDB_CHAIN_IDS):
+					raise RuntimeError(
+						"Too many residues for classic PDB sanitizer. "
+						"Need a larger-format solution."
+					)
+
+		chain_id = PDB_CHAIN_IDS[chain_idx]
+
+		# atom serial stays in valid 5-column PDB range
+		serial_out = ((atom_serial - 1) % 99999) + 1
+		atom_serial += 1
+
+		new_line = (
+			f"{line[:6]}"
+			f"{serial_out:5d}"
+			f"{line[11:21]}"
+			f"{chain_id}"
+			f"{new_resseq:4d}"
+			f"{line[26:]}"
+		)
+		new_lines.append(new_line)
+
+	with open(output_pdb, "w") as f:
+		f.writelines(new_lines)
+
 # ====
 # Structure & file modification classes
 # ====
@@ -1335,6 +1396,7 @@ class Hyd_BulkCreator:
 
 	def create_bulk_phase(self):
 		self.packmol_generate_box()
+		sanitize_pdb_for_tleap(f"{self.system_tag}.pdb")
 
 class Hyd_AmberParams:
 	def __init__(self, polymer, chain_length, num_chains, bulk_creator: Hyd_BulkCreator):
@@ -1483,6 +1545,7 @@ class Cond_BulkCreator:
 	
 	def create_bulk_phase(self):
 		self.packmol_generate_box()
+		sanitize_pdb_for_tleap(f"{self.system_tag}.pdb")
 
 class Cond_AmberParams:
 	def __init__(self, polymer, chain_length, num_chains, bulk_creator: Cond_BulkCreator):
@@ -1936,9 +1999,10 @@ def run_conductivity_workflow(nproc, chain_lengths):
 		cell = hyd_pdb_file.cell
 		a, b, c = cell.lengths()
 		hyd_clean_pdb = f"{hyd_tag}_hyd-eq_clean.pdb"
-		
+		sanitize_pdb_for_tleap(hyd_clean_pdb)
 		cleaner = PDBCleaner(hyd_pdb, hyd_clean_pdb, chain_length, num_chains, mix_chains, chain_lengths)
 		cleaner.remove_so3h_hydrogens()
+		
 		num_h3o = cleaner.hydrogens_removed_count
 		
 		with open(output, 'a') as f:
