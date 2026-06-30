@@ -33,7 +33,7 @@ run_id = "r1"
 
 run_dry_analysis = True
 run_hyd_analysis = True
-run_cond_analysis = False
+run_cond_analysis = True
 
 # Dry equilibration protocol
 # "6-step" or "12-step"
@@ -60,6 +60,12 @@ rdf_settings = {
 	"N-S": {"cutoff": 30.0, "bins": 300},
 }
 
+# frame selection for dry pr-nvt trajectory
+frame_start = 1
+frame_stop = 100
+frame_stride = 10
+overwrite = True
+
 # Hydration levels to analyze
 hyd_analysis_lam_list = [12]
 
@@ -81,11 +87,28 @@ hyd_rdf_settings = {
 # Water cluster settings
 water_oo_cutoff = 3.5
 
-# frame selection for dry pr-nvt trajectory
-frame_start = 1
-frame_stop = 100
-frame_stride = 10
-overwrite = True
+# Conductivity levels to analyze
+cond_analysis_lam_list = [12]
+
+# Conductivity production trajectory
+cond_traj_file = "cond_pr-nvt.nc"
+cond_restart_file = "cond_pr-nvt.ncrst"
+
+# Conductivity frame selection
+cond_frame_start = 1
+cond_frame_stop = 10000
+cond_frame_stride = 10
+cond_time_between_nc_frames_ps = 100.0
+
+# MSD fitting window
+msd_fit_start_ps = 10000.0	 # 10 ns
+msd_fit_end_ps = 100000.0	 # 100 ns
+
+# Conductivity calculation
+cond_temperature_K = 300.0
+
+# Residence analysis
+h3o_s_residence_cutoff = 4.0  # A
 
 # ====
 # Constants
@@ -103,6 +126,11 @@ molecular_weights = {
 }
 
 excluded_non_polymer_resnames = ["WAT", "HOH", "H3O"]
+
+elementary_charge_C = 1.602176634e-19
+boltzmann_J_K = 1.380649e-23
+angstrom2_per_ps_to_m2_per_s = 1.0e-8
+angstrom3_to_m3 = 1.0e-30
 
 # ====
 # Paths / Folders
@@ -467,6 +495,167 @@ def validate_hyd_inputs(lam, prmtop_file):
 			"\n".join(missing)
 		)
 
+def get_lam_cond_dirs(lam):
+	lam_dir = os.path.join(cond_pr_dir, f"{lam}_h3o-h2o")
+	lam_md_dir = os.path.join(lam_dir, "md")
+	lam_analysis_dir = os.path.join(cond_analysis_dir, f"{lam}_h3o-h2o")
+
+	return lam_dir, lam_md_dir, lam_analysis_dir
+
+def validate_cond_inputs(lam, prmtop_file):
+	lam_dir, lam_md_dir, lam_analysis_dir = get_lam_cond_dirs(lam)
+
+	required_files = [
+		prmtop_file,
+		os.path.join(lam_md_dir, cond_traj_file),
+		os.path.join(lam_md_dir, cond_restart_file),
+	]
+
+	missing = [f for f in required_files if not os.path.exists(f)]
+
+	if len(missing) > 0:
+		raise FileNotFoundError(
+			f"Missing conductivity analysis input files for lambda={lam}:\n" +
+			"\n".join(missing)
+		)
+
+def is_h3o_residue(resname):
+	return resname == "H3O"
+
+def is_h3o_oxygen_line(line):
+	if not is_atom_line(line):
+		return False
+
+	resname = residue_name(line)
+	if not is_h3o_residue(resname):
+		return False
+
+	elem = element_from_pdb_line(line)
+	name = atom_name(line)
+
+	return elem == "O" or name.upper().startswith("O")
+
+def get_h3o_oxygen_indices_from_first_model(pdb_file):
+	lines = load_first_model_atom_lines(pdb_file)
+
+	h3o_o_indices = []
+	global_atom_idx = -1
+
+	for line in lines:
+		if not is_atom_line(line):
+			continue
+
+		global_atom_idx += 1
+
+		if is_h3o_oxygen_line(line):
+			h3o_o_indices.append(global_atom_idx)
+
+	if len(h3o_o_indices) == 0:
+		raise RuntimeError("No H3O oxygen atoms were found for conductivity analysis.")
+
+	return h3o_o_indices
+
+def get_s_atom_indices_from_first_model(pdb_file):
+	lines = load_first_model_atom_lines(pdb_file)
+
+	s_indices = []
+	global_atom_idx = -1
+
+	for line in lines:
+		if not is_atom_line(line):
+			continue
+
+		global_atom_idx += 1
+
+		resname = residue_name(line)
+		if resname in excluded_non_polymer_resnames:
+			continue
+
+		if element_from_pdb_line(line) == "S":
+			s_indices.append(global_atom_idx)
+
+	if len(s_indices) == 0:
+		raise RuntimeError("No S atoms were found for H3O residence analysis.")
+
+	return s_indices
+
+def calculate_time_origin_msd(unwrapped_positions, sample_dt_ps):
+	n_frames = unwrapped_positions.shape[0]
+
+	rows = []
+
+	for lag in range(n_frames):
+		if lag == 0:
+			msd_xyz = np.array([0.0, 0.0, 0.0])
+		else:
+			displacements = unwrapped_positions[lag:] - unwrapped_positions[:-lag]
+			msd_xyz = np.mean(displacements ** 2, axis=(0, 1))
+
+		msd_total = float(np.sum(msd_xyz))
+
+		rows.append({
+			"lag_frame": lag,
+			"time_ps": lag * sample_dt_ps,
+			"time_ns": lag * sample_dt_ps / 1000.0,
+			"msd_total_A2": msd_total,
+			"msd_x_A2": float(msd_xyz[0]),
+			"msd_y_A2": float(msd_xyz[1]),
+			"msd_z_A2": float(msd_xyz[2]),
+		})
+
+	return pd.DataFrame(rows)
+
+def fit_msd_diffusion(msd_df):
+	fit_df = msd_df[
+		(msd_df["time_ps"] >= msd_fit_start_ps) &
+		(msd_df["time_ps"] <= msd_fit_end_ps)
+	].copy()
+
+	if len(fit_df) < 2:
+		raise RuntimeError(
+			"Not enough MSD points in fitting window. "
+			f"Requested {msd_fit_start_ps}-{msd_fit_end_ps} ps, "
+			f"but found only {len(fit_df)} points. "
+			"Check cond_time_between_nc_frames_ps, cond_frame_start/stop/stride."
+		)
+
+	time = fit_df["time_ps"].values
+
+	slope_total, intercept_total = np.polyfit(time, fit_df["msd_total_A2"].values, 1)
+	slope_x, intercept_x = np.polyfit(time, fit_df["msd_x_A2"].values, 1)
+	slope_y, intercept_y = np.polyfit(time, fit_df["msd_y_A2"].values, 1)
+	slope_z, intercept_z = np.polyfit(time, fit_df["msd_z_A2"].values, 1)
+
+	D_total_A2_ps = slope_total / 6.0
+	D_x_A2_ps = slope_x / 2.0
+	D_y_A2_ps = slope_y / 2.0
+	D_z_A2_ps = slope_z / 2.0
+
+	D_total_m2_s = D_total_A2_ps * angstrom2_per_ps_to_m2_per_s
+	D_x_m2_s = D_x_A2_ps * angstrom2_per_ps_to_m2_per_s
+	D_y_m2_s = D_y_A2_ps * angstrom2_per_ps_to_m2_per_s
+	D_z_m2_s = D_z_A2_ps * angstrom2_per_ps_to_m2_per_s
+
+	result = pd.DataFrame([{
+		"fit_start_ps": msd_fit_start_ps,
+		"fit_end_ps": msd_fit_end_ps,
+		"num_fit_points": len(fit_df),
+		"slope_total_A2_ps": slope_total,
+		"slope_x_A2_ps": slope_x,
+		"slope_y_A2_ps": slope_y,
+		"slope_z_A2_ps": slope_z,
+		"D_total_A2_ps": D_total_A2_ps,
+		"D_x_A2_ps": D_x_A2_ps,
+		"D_y_A2_ps": D_y_A2_ps,
+		"D_z_A2_ps": D_z_A2_ps,
+		"D_total_m2_s": D_total_m2_s,
+		"D_x_m2_s": D_x_m2_s,
+		"D_y_m2_s": D_y_m2_s,
+		"D_z_m2_s": D_z_m2_s,
+	}])
+
+	return result
+
 def log_general_settings():
 	log_message("SPI conductivity analysis workflow")
 	log_message(f"\tpolymer = {polymer}")
@@ -507,6 +696,26 @@ def log_hyd_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir):
 	log_message(f"\thyd_restart_file = {hyd_restart_file}")
 	log_message(f"\thyd_rdf_pairs = {hyd_rdf_pairs}")
 	log_message(f"\twater_oo_cutoff = {water_oo_cutoff}")
+
+def log_cond_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir):
+	log_message("Conductivity analysis settings")
+	log_message(f"\tlambda = {lam}")
+	log_message(f"\tlam_tag = {lam_tag}")
+	log_message(f"\tcond_analysis_lam_list = {cond_analysis_lam_list}")
+	log_message(f"\tcond_pr_dir = {cond_pr_dir}")
+	log_message(f"\tlam_md_dir = {lam_md_dir}")
+	log_message(f"\tlam_analysis_dir = {lam_analysis_dir}")
+	log_message(f"\tprmtop_file = {prmtop_file}")
+	log_message(f"\tcond_traj_file = {cond_traj_file}")
+	log_message(f"\tcond_restart_file = {cond_restart_file}")
+	log_message(f"\tcond_frame_start = {cond_frame_start}")
+	log_message(f"\tcond_frame_stop = {cond_frame_stop}")
+	log_message(f"\tcond_frame_stride = {cond_frame_stride}")
+	log_message(f"\tcond_time_between_nc_frames_ps = {cond_time_between_nc_frames_ps}")
+	log_message(f"\tmsd_fit_start_ps = {msd_fit_start_ps}")
+	log_message(f"\tmsd_fit_end_ps = {msd_fit_end_ps}")
+	log_message(f"\tcond_temperature_K = {cond_temperature_K}")
+	log_message(f"\th3o_s_residence_cutoff = {h3o_s_residence_cutoff}")
 
 # ====
 # Dry analysis classes
@@ -1361,6 +1570,330 @@ class Hyd_SummaryWriter:
 		log_message(f"\tHyd lambda={self.lam}: hyd_summary.csv written")
 		return df
 
+# ====
+# Conductivity analysis classes
+# ====
+
+class Cond_TrajectoryPreparation:
+	def __init__(self, lam, prmtop_file):
+		self.lam = lam
+		self.prmtop_file = prmtop_file
+
+		self.lam_dir, self.lam_md_dir, self.lam_analysis_dir = get_lam_cond_dirs(lam)
+
+		self.traj_file = os.path.join(self.lam_md_dir, cond_traj_file)
+		self.restart_file = os.path.join(self.lam_md_dir, cond_restart_file)
+
+		self.last_pdb = os.path.join(self.lam_analysis_dir, "cond_last.pdb")
+
+		# Full sampled trajectory, used for residence analysis
+		self.sampled_pdb = os.path.join(self.lam_analysis_dir, "cond_pr-nvt_sampled.pdb")
+
+		# H3O-only unwrapped trajectory, used for MSD / D / conductivity
+		self.h3o_unwrapped_pdb = os.path.join(self.lam_analysis_dir, "cond_pr-nvt_h3o_unwrapped.pdb")
+
+		self.cpptraj_input = os.path.join(self.lam_analysis_dir, "cpptraj_cond_analysis.in")
+		self.cpptraj_h3o_input = os.path.join(self.lam_analysis_dir, "cpptraj_cond_h3o_unwrap.in")
+
+		self.tmp_prefix = os.path.join(self.lam_analysis_dir, "cond_pr-nvt_tmp")
+		self.h3o_tmp_prefix = os.path.join(self.lam_analysis_dir, "cond_pr-nvt_h3o_tmp")
+
+	def create_last_pdb(self):
+		if os.path.exists(self.last_pdb) and not overwrite:
+			log_message(f"\tCond lambda={self.lam} last PDB already exists. Skipping ambpdb.")
+			return self.last_pdb
+
+		ambpdb_command = f"ambpdb -p {self.prmtop_file} -c {self.restart_file} > {self.last_pdb}"
+		run_command(ambpdb_command)
+
+		log_message(f"\tCond lambda={self.lam} last PDB created")
+		return self.last_pdb
+
+	def create_sampled_pdb(self):
+		if os.path.exists(self.sampled_pdb) and not overwrite:
+			log_message(f"\tCond lambda={self.lam} sampled PDB already exists. Skipping cpptraj.")
+			return self.sampled_pdb
+
+		for old_file in glob.glob(f"{self.tmp_prefix}*"):
+			os.remove(old_file)
+
+		with open(self.cpptraj_input, "w") as f:
+			f.write(f"trajin {self.traj_file} {cond_frame_start} {cond_frame_stop} {cond_frame_stride}\n")
+			f.write("autoimage\n")
+			f.write(f"trajout {self.tmp_prefix}.pdb pdb multi\n")
+
+		cpptraj_command = f"cpptraj -i {self.cpptraj_input} -p {self.prmtop_file}"
+		run_command(cpptraj_command)
+
+		tmp_files = sorted(
+			glob.glob(f"{self.tmp_prefix}.pdb*"),
+			key=lambda x: int(x.split(".")[-1]) if x.split(".")[-1].isdigit() else 0
+		)
+
+		if len(tmp_files) == 0:
+			raise RuntimeError(
+				"cpptraj did not create sampled conductivity PDB files.\n"
+				f"Expected files matching: {self.tmp_prefix}.pdb*\n"
+				f"Check cpptraj input file: {self.cpptraj_input}"
+			)
+
+		with open(self.sampled_pdb, "w") as outfile:
+			for pdb_file in tmp_files:
+				with open(pdb_file, "r") as infile:
+					shutil.copyfileobj(infile, outfile)
+
+		for pdb_file in tmp_files:
+			os.remove(pdb_file)
+
+		log_message(f"\tCond lambda={self.lam} sampled PDB created")
+		return self.sampled_pdb
+
+	def create_h3o_unwrapped_pdb(self):
+		if os.path.exists(self.h3o_unwrapped_pdb) and not overwrite:
+			log_message(f"\tCond lambda={self.lam} H3O unwrapped PDB already exists. Skipping cpptraj.")
+			return self.h3o_unwrapped_pdb
+
+		for old_file in glob.glob(f"{self.h3o_tmp_prefix}*"):
+			os.remove(old_file)
+
+		with open(self.cpptraj_h3o_input, "w") as f:
+			f.write(f"trajin {self.traj_file} {cond_frame_start} {cond_frame_stop} {cond_frame_stride}\n")
+			f.write("autoimage\n")
+			f.write("strip !:H3O\n")
+			f.write("unwrap :H3O\n")
+			f.write(f"trajout {self.h3o_tmp_prefix}.pdb pdb multi\n")
+
+		cpptraj_command = f"cpptraj -i {self.cpptraj_h3o_input} -p {self.prmtop_file}"
+		run_command(cpptraj_command)
+
+		tmp_files = sorted(
+			glob.glob(f"{self.h3o_tmp_prefix}.pdb*"),
+			key=lambda x: int(x.split(".")[-1]) if x.split(".")[-1].isdigit() else 0
+		)
+
+		if len(tmp_files) == 0:
+			raise RuntimeError(
+				"cpptraj did not create H3O unwrapped PDB files.\n"
+				f"Expected files matching: {self.h3o_tmp_prefix}.pdb*\n"
+				f"Check cpptraj input file: {self.cpptraj_h3o_input}"
+			)
+
+		with open(self.h3o_unwrapped_pdb, "w") as outfile:
+			for pdb_file in tmp_files:
+				with open(pdb_file, "r") as infile:
+					shutil.copyfileobj(infile, outfile)
+
+		for pdb_file in tmp_files:
+			os.remove(pdb_file)
+
+		log_message(f"\tCond lambda={self.lam} H3O unwrapped PDB created")
+		return self.h3o_unwrapped_pdb
+
+class Cond_H3OMSDAnalysis:
+	def __init__(self, lam, h3o_unwrapped_pdb, lam_analysis_dir):
+		self.lam = lam
+		self.h3o_unwrapped_pdb = h3o_unwrapped_pdb
+		self.lam_analysis_dir = lam_analysis_dir
+
+	def load_h3o_positions(self):
+		frames = read(self.h3o_unwrapped_pdb, index=":")
+		if not isinstance(frames, list):
+			frames = [frames]
+
+		positions = []
+		volumes = []
+
+		for atoms in frames:
+			o_indices = [atom.index for atom in atoms if atom.symbol == "O"]
+
+			if len(o_indices) == 0:
+				raise RuntimeError("No O atoms found in H3O unwrapped PDB.")
+
+			positions.append(atoms.positions[o_indices])
+			volumes.append(atoms.get_volume())
+
+		positions = np.array(positions, dtype=float)
+		volumes = np.array(volumes, dtype=float)
+
+		num_h3o = positions.shape[1]
+
+		return positions, volumes, num_h3o
+
+	def calculate_msd(self):
+		positions, volumes, num_h3o = self.load_h3o_positions()
+
+		sample_dt_ps = cond_time_between_nc_frames_ps * cond_frame_stride
+
+		# H3O positions are already unwrapped by cpptraj.
+		msd_df = calculate_time_origin_msd(positions, sample_dt_ps)
+
+		msd_csv = os.path.join(self.lam_analysis_dir, "h3o_msd.csv")
+		msd_png = os.path.join(self.lam_analysis_dir, "h3o_msd.png")
+
+		msd_df.to_csv(msd_csv, index=False)
+
+		plt.figure(figsize=(7, 5))
+		plt.plot(msd_df["time_ns"], msd_df["msd_total_A2"], label="total")
+		plt.plot(msd_df["time_ns"], msd_df["msd_x_A2"], label="x")
+		plt.plot(msd_df["time_ns"], msd_df["msd_y_A2"], label="y")
+		plt.plot(msd_df["time_ns"], msd_df["msd_z_A2"], label="z")
+		plt.xlabel("time [ns]")
+		plt.ylabel("MSD [A$^2$]")
+		plt.legend()
+		plt.tight_layout()
+		plt.savefig(msd_png, dpi=300)
+		plt.close()
+
+		diffusion_df = fit_msd_diffusion(msd_df)
+		diffusion_csv = os.path.join(self.lam_analysis_dir, "h3o_diffusion.csv")
+		diffusion_df.to_csv(diffusion_csv, index=False)
+
+		msdc_df = pd.DataFrame({
+			"time_ps": msd_df["time_ps"],
+			"time_ns": msd_df["time_ns"],
+			"MSDc_A2": msd_df["msd_z_A2"],
+		})
+		msdc_csv = os.path.join(self.lam_analysis_dir, "h3o_msdc.csv")
+		msdc_df.to_csv(msdc_csv, index=False)
+
+		eta_df = pd.DataFrame({
+			"time_ps": msd_df["time_ps"],
+			"time_ns": msd_df["time_ns"],
+			"eta_c": np.where(
+				msd_df["msd_total_A2"] > 0,
+				msd_df["msd_z_A2"] / msd_df["msd_total_A2"],
+				np.nan
+			)
+		})
+		eta_csv = os.path.join(self.lam_analysis_dir, "h3o_directional_efficiency.csv")
+		eta_df.to_csv(eta_csv, index=False)
+
+		volume_mean_A3 = float(np.mean(volumes))
+
+		log_message(
+			f"\tCond lambda={self.lam}: H3O MSD calculated from cpptraj-unwrapped trajectory. "
+			f"num_h3o = {num_h3o}, mean volume = {volume_mean_A3:.3f} A3"
+		)
+
+		return msd_df, diffusion_df, msdc_df, eta_df, num_h3o, volume_mean_A3
+
+class Cond_ConductivityAnalysis:
+	def __init__(self, lam, lam_analysis_dir):
+		self.lam = lam
+		self.lam_analysis_dir = lam_analysis_dir
+
+	def calculate_conductivity(self, diffusion_df, num_h3o, volume_mean_A3):
+		D_total_m2_s = float(diffusion_df.loc[0, "D_total_m2_s"])
+		volume_m3 = volume_mean_A3 * angstrom3_to_m3
+
+		sigma_S_m = (
+			num_h3o *
+			elementary_charge_C ** 2 *
+			D_total_m2_s /
+			(volume_m3 * boltzmann_J_K * cond_temperature_K)
+		)
+
+		sigma_S_cm = sigma_S_m / 100.0
+
+		df = pd.DataFrame([{
+			"lambda": self.lam,
+			"num_h3o": num_h3o,
+			"temperature_K": cond_temperature_K,
+			"volume_A3": volume_mean_A3,
+			"volume_m3": volume_m3,
+			"D_total_m2_s": D_total_m2_s,
+			"sigma_S_m": sigma_S_m,
+			"sigma_S_cm": sigma_S_cm,
+		}])
+
+		conductivity_csv = os.path.join(self.lam_analysis_dir, "h3o_conductivity.csv")
+		df.to_csv(conductivity_csv, index=False)
+
+		log_message(
+			f"\tCond lambda={self.lam}: conductivity calculated. "
+			f"sigma = {sigma_S_m:.6e} S/m"
+		)
+
+		return df
+
+class Cond_ResidenceAnalysis:
+	def __init__(self, lam, sampled_pdb, lam_analysis_dir):
+		self.lam = lam
+		self.sampled_pdb = sampled_pdb
+		self.lam_analysis_dir = lam_analysis_dir
+
+	def calculate_residence(self):
+		h3o_o_indices = get_h3o_oxygen_indices_from_first_model(self.sampled_pdb)
+		s_indices = get_s_atom_indices_from_first_model(self.sampled_pdb)
+
+		frames = read(self.sampled_pdb, index=":")
+		if not isinstance(frames, list):
+			frames = [frames]
+
+		rows = []
+		sample_dt_ps = cond_time_between_nc_frames_ps * cond_frame_stride
+
+		for frame_i, atoms in enumerate(frames):
+			h3o_pos = atoms.positions[h3o_o_indices]
+			s_pos = atoms.positions[s_indices]
+			box = atoms.cell.lengths()
+
+			num_bound = 0
+
+			for pos in h3o_pos:
+				delta = s_pos - pos
+				delta -= box * np.round(delta / box)
+				distances = np.linalg.norm(delta, axis=1)
+
+				if np.min(distances) <= h3o_s_residence_cutoff:
+					num_bound += 1
+
+			fraction_bound = num_bound / len(h3o_o_indices) if len(h3o_o_indices) > 0 else np.nan
+
+			rows.append({
+				"frame": frame_i,
+				"time_ps": frame_i * sample_dt_ps,
+				"time_ns": frame_i * sample_dt_ps / 1000.0,
+				"num_h3o": len(h3o_o_indices),
+				"num_bound_h3o": num_bound,
+				"fraction_bound_h3o": fraction_bound,
+			})
+
+		df = pd.DataFrame(rows)
+
+		residence_csv = os.path.join(self.lam_analysis_dir, "h3o_residence.csv")
+		residence_png = os.path.join(self.lam_analysis_dir, "h3o_residence.png")
+
+		df.to_csv(residence_csv, index=False)
+
+		plt.figure(figsize=(7, 5))
+		plt.plot(df["time_ns"], df["fraction_bound_h3o"])
+		plt.xlabel("time [ns]")
+		plt.ylabel("fraction bound H3O")
+		plt.tight_layout()
+		plt.savefig(residence_png, dpi=300)
+		plt.close()
+
+		summary = pd.DataFrame([{
+			"lambda": self.lam,
+			"h3o_s_residence_cutoff_A": h3o_s_residence_cutoff,
+			"h3o_bound_fraction_mean": float(df["fraction_bound_h3o"].mean()),
+			"h3o_bound_fraction_std": float(df["fraction_bound_h3o"].std(ddof=0)),
+			"h3o_bound_number_mean": float(df["num_bound_h3o"].mean()),
+			"h3o_bound_number_std": float(df["num_bound_h3o"].std(ddof=0)),
+		}])
+
+		residence_summary_csv = os.path.join(self.lam_analysis_dir, "h3o_residence_summary.csv")
+		summary.to_csv(residence_summary_csv, index=False)
+
+		log_message(
+			f"\tCond lambda={self.lam}: H3O residence calculated. "
+			f"bound fraction mean = {summary.loc[0, 'h3o_bound_fraction_mean']:.3f}"
+		)
+
+		return df, summary
+
+class Cond_SummaryWriter:
 	def __init__(self, lam, system_tag, lam_analysis_dir):
 		self.lam = lam
 		self.system_tag = system_tag
@@ -1368,18 +1901,17 @@ class Hyd_SummaryWriter:
 
 	def write_summary(
 		self,
-		density,
-		nn_mean,
-		nn_std,
-		S2_mean,
-		S2_std,
-		rdf_peak_results,
-		water_cluster_summary
+		msd_df,
+		diffusion_df,
+		conductivity_df,
+		msdc_df,
+		eta_df,
+		residence_summary
 	):
 		row = {
 			"system_tag": self.system_tag,
 			"polymer": polymer,
-			"stage": "hydrated",
+			"stage": "conductivity",
 			"lambda": self.lam,
 			"chain_length": chain_length,
 			"num_chains": num_chains,
@@ -1387,35 +1919,39 @@ class Hyd_SummaryWriter:
 			"aligned": aligned,
 			"conf_selection": conf_selection,
 			"run_id": run_id,
-			"trajectory": hyd_traj_file,
-			"restart": hyd_restart_file,
-			"frame_start": frame_start,
-			"frame_stop": frame_stop,
-			"frame_stride": frame_stride,
-			"density_g_cm3": density,
-			"S2_mean": S2_mean,
-			"S2_std": S2_std,
-			"N_N_monomer_distance_mean_A": nn_mean,
-			"N_N_monomer_distance_std_A": nn_std,
+			"trajectory": cond_traj_file,
+			"restart": cond_restart_file,
+			"cond_frame_start": cond_frame_start,
+			"cond_frame_stop": cond_frame_stop,
+			"cond_frame_stride": cond_frame_stride,
+			"cond_time_between_nc_frames_ps": cond_time_between_nc_frames_ps,
+			"msd_fit_start_ps": msd_fit_start_ps,
+			"msd_fit_end_ps": msd_fit_end_ps,
+			"cond_temperature_K": cond_temperature_K,
 		}
 
-		for pair, values in rdf_peak_results.items():
-			r_peak, g_peak = values
-			key = pair.replace("-", "_")
-			row[f"r_{key}_peak_A"] = r_peak
-			row[f"g_{key}_peak"] = g_peak
+		for col in diffusion_df.columns:
+			row[col] = diffusion_df.loc[0, col]
 
-		if water_cluster_summary is not None and len(water_cluster_summary) > 0:
-			for col in water_cluster_summary.columns:
+		for col in conductivity_df.columns:
+			if col != "lambda":
+				row[col] = conductivity_df.loc[0, col]
+
+		row["MSDc_final_A2"] = float(msdc_df["MSDc_A2"].iloc[-1])
+		row["eta_c_final"] = float(eta_df["eta_c"].iloc[-1])
+
+		if residence_summary is not None and len(residence_summary) > 0:
+			for col in residence_summary.columns:
 				if col != "lambda":
-					row[col] = water_cluster_summary.loc[0, col]
+					row[col] = residence_summary.loc[0, col]
 
 		df = pd.DataFrame([row])
 
-		summary_csv = os.path.join(self.lam_analysis_dir, "hyd_summary.csv")
+		summary_csv = os.path.join(self.lam_analysis_dir, "cond_summary.csv")
 		df.to_csv(summary_csv, index=False)
 
-		log_message(f"\tHyd lambda={self.lam}: hyd_summary.csv written")
+		log_message(f"\tCond lambda={self.lam}: cond_summary.csv written")
+
 		return df
 
 # ====
@@ -1528,6 +2064,73 @@ def run_hyd_analysis_workflow():
 
 	return None
 
+def run_cond_analysis_workflow():
+	all_summaries = []
+
+	for lam in cond_analysis_lam_list:
+		lam_tag = cond_system_name(polymer, chain_length, num_chains, lam, mix_chains)
+		lam_dir, lam_md_dir, lam_analysis_dir = get_lam_cond_dirs(lam)
+
+		os.makedirs(lam_analysis_dir, exist_ok=True)
+
+		log_message(f"Conductivity analysis workflow started for lambda={lam}")
+		log_message(f"\tlam_tag = {lam_tag}")
+		log_message(f"\tlam_md_dir = {lam_md_dir}")
+		log_message(f"\tlam_analysis_dir = {lam_analysis_dir}")
+
+		prmtop_file = find_prmtop(lam_md_dir)
+		validate_cond_inputs(lam, prmtop_file)
+
+		log_general_settings()
+		log_cond_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir)
+
+		traj_prep = Cond_TrajectoryPreparation(lam, prmtop_file)
+		last_pdb = traj_prep.create_last_pdb()
+
+		# Full sampled trajectory for H3O-S residence
+		sampled_pdb = traj_prep.create_sampled_pdb()
+
+		# H3O-only unwrapped trajectory for MSD / D / conductivity
+		h3o_unwrapped_pdb = traj_prep.create_h3o_unwrapped_pdb()
+
+		msd_analysis = Cond_H3OMSDAnalysis(lam, h3o_unwrapped_pdb, lam_analysis_dir)
+		msd_df, diffusion_df, msdc_df, eta_df, num_h3o, volume_mean_A3 = msd_analysis.calculate_msd()
+
+		conductivity_analysis = Cond_ConductivityAnalysis(lam, lam_analysis_dir)
+		conductivity_df = conductivity_analysis.calculate_conductivity(
+			diffusion_df,
+			num_h3o,
+			volume_mean_A3
+		)
+
+		residence_analysis = Cond_ResidenceAnalysis(lam, sampled_pdb, lam_analysis_dir)
+		residence_df, residence_summary = residence_analysis.calculate_residence()
+
+		summary_writer = Cond_SummaryWriter(lam, lam_tag, lam_analysis_dir)
+		summary = summary_writer.write_summary(
+			msd_df,
+			diffusion_df,
+			conductivity_df,
+			msdc_df,
+			eta_df,
+			residence_summary
+		)
+
+		all_summaries.append(summary)
+
+		log_message(f"Conductivity analysis workflow finished for lambda={lam}")
+
+	if len(all_summaries) > 0:
+		all_summary_df = pd.concat(all_summaries, ignore_index=True)
+		all_summary_csv = os.path.join(cond_analysis_dir, "cond_summary_all.csv")
+		all_summary_df.to_csv(all_summary_csv, index=False)
+
+		log_message("Conductivity summary for all lambda values written")
+
+		return all_summary_df
+
+	return None
+
 # ====
 # Main workflow
 # ====
@@ -1541,8 +2144,8 @@ def run_workflow():
 	if run_hyd_analysis:
 		run_hyd_analysis_workflow()
 
-	if run_cond_analysis:
-		log_message("Conductivity analysis is not implemented yet")
+    if run_cond_analysis:
+        run_cond_analysis_workflow()
 
 if __name__ == "__main__":
 	run_workflow()
