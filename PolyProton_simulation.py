@@ -74,7 +74,7 @@ run_cond = False
 # ====
 
 base_dir = os.getcwd()
-output = os.path.join(base_dir, 'spi_cond_simulation_workflow_process.txt')
+output = os.path.join(base_dir, 'PolyProton_simulation_process.txt')
 
 polymer_dir = os.path.join(base_dir, polymer)
 init_dir = os.path.join(polymer_dir, "init")

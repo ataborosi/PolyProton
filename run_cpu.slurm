@@ -27,4 +27,4 @@ cp -r * /home/Calculations/$UNAME/$DIR2
 cd /home/Calculations/$UNAME/$DIR2
 
 export USE_GPU=False
-python3 spi_cond_simulation_workflow.py
+python3 PolyProton_simulation.py

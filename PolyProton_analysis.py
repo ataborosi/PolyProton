@@ -158,7 +158,7 @@ dry_analysis_dir = os.path.join(analysis_dir, "dry")
 hyd_analysis_dir = os.path.join(analysis_dir, "hyd")
 cond_analysis_dir = os.path.join(analysis_dir, "cond")
 
-output = os.path.join(base_dir, "spi_cond_analysis_workflow_process.txt")
+output = os.path.join(base_dir, "PolyProton_analysis_process.txt")
 
 # ====
 # Helper functions
