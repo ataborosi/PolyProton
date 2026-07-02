@@ -69,14 +69,23 @@ The analysis workflow requires the following
 
 ## Main simulation settings
 Most user controlled simulation settings are defined near the top of "PolyProton_simulation.py" 
+The simulation workflow is intended to be run from the project root directory.
+Simulation files are written under the `simulation/` folder, while analysis results are written
+separately under the `analysis/` folder.
 
 Example:
 ```
 polymer = "a1"
 
+backbone_smiles = "C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O"
+sidechain_smiles = "OCCCS(O)(=O)=O"
+benzene_smiles = "C1=CC=CC=C1"
+
 conf_num = 50
-conf_selection = "best"          
-conf_prune_rms_thresh = 0.02      
+conf_selection = "best"
+temperature = 300
+conf_far_fraction = 0.5
+conf_prune_rms_thresh = 0.02
 
 chain_length = 15
 num_chains = 30
@@ -87,28 +96,51 @@ aligned = True
 lam_list = [2, 4, 6, 8, 10, 12]
 cond_lam_list = [12]
 
-dry_eq_prot = "6-step"           
+dry_eq_prot = "6-step"
 
 run_param = True
 run_dry = True
 run_hyd = True
 run_cond = True
+
+use_gpu = True
+
 ```
 
 Important options:
 | Setting | Meaning |
 |---|---|
-| `polymer` | Polymer label, such as `a1`, `a6`, or `a8`. Will create a folder name based on this and perform simulations in it. |
-| `backbone_smiles` | SMILES string of the dianhydride/backbone unit. |
+| `polymer` | Polymer label, such as `a1`, `a6`, or `a8`. This label is used in generated file names. |
+| `backbone_smiles` | SMILES string of the dianhydride-backbone unit. |
 | `sidechain_smiles` | SMILES string of the sulfonated side chain. |
-| `conf_num` | Target number of conformers to generate. The actual number may be lower after pruning. |
+| `benzene_smiles` | SMILES string of the benzene-backbone unit. |
+| `conf_num` | Target number of conformers to generate. The actual number may be lower after RDKit pruning. |
+| `conf_selection` | Selects the conformer used for parameterization. Use `"best"` for the lowest-energy conformer or `"random"` for a randomly selected higher-energy/diverse conformer.|
+| `temperature` | Temperature used for Boltzmann weighting of conformers. |
+| `conf_far_fraction` | Fraction of high-energy/diverse conformers used as the random selection pool when `conf_selection = "random"`. |
 | `conf_prune_rms_thresh` | RDKit conformer pruning threshold. Smaller values retain more similar conformers; `-1.0` disables pruning. |
-| `conf_selection` | Selects either the best-ranked conformer or a random conformer from the high-energy/diverse conformer pool. |
-| `chain_length` | Number of repeat units in the base polymer chain. |
-| `num_chains` | Number of chains packed into the bulk simulation cell. |
-| `mix_chains` | If `True`, randomly generates a chain-length distribution around the base chain length. |
+| `chain_length` | Number of repeat units in the base polymer chain. This value is also used in generated file names. |
+| `num_chains` | Number of chains packed into the bulk simulation cell. This value is also used in generated file names. |
+| `mix_chains` | If `True`, generates a distribution of chain lengths around chain_length. If `False`, all chains use exactly `chain_length`. This value also affects generated file names. |
+| `mix_seed` | Random seed used to generate mixed chain lengths when `mix_chains = True`. |
 | `aligned` | If `True`, uses aligned/compact initial packing. If `False`, uses less-aligned initial orientations. |
-| `lam_list` | Hydration levels to prepare and equilibrate. |
+| `lam_list` | Hydration levels prepared and equilibrated during the hydration workflow. Hydration level defined by λ, thus the number of water molecules equivalent to sulfonic acid group.  |
 | `cond_lam_list` | Hydration levels selected for conductivity simulations. These must be included in `lam_list`. |
 | `dry_eq_prot` | Selects the 6-step or 12-step dry equilibration protocol. |
 | `run_param`, `run_dry`, `run_hyd`, `run_cond` | Enable or disable each workflow stage. |
+| `use_gpu` | Controls Amber MD execution mode. If `True`, supported MD steps use `pmemd.cuda`. If `False`, all Amber MD steps use `pmemd.MPI`. |
+
+GPU/CPU exacution
+```
+use_gpu = True
+```
+With this setting, supported Amber MD steps are run with `pmemd.cuda`. Some steps, such as MIN and NPT, may still be run with `pmemd.MPI`.
+```
+use_gpu = False
+```
+To run the workflow only in CPU/MPI mode with `pmemd.MPI`.
+
+WORKFLOW run
+python3 PolyProton_simulation.py
+
+## Main analysis settings
