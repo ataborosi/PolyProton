@@ -46,10 +46,10 @@ sidechain_smiles = "OCCCS(O)(=O)=O"
 benzene_smiles = "C1=CC=CC=C1"
 
 conf_num = 50
-conf_selection = "best"			 # "best" or "random"
+conf_selection = "best"			 
 temperature = 300
 conf_far_fraction = 0.5
-conf_prune_rms_thresh = 0.02	 # use -1.0 to disable pruning
+conf_prune_rms_thresh = 0.02	
 
 chain_length = 15
 num_chains = 30
@@ -60,14 +60,14 @@ aligned = True
 lam_list = [2, 4, 6, 8, 10, 12]
 cond_lam_list = [12]
 
-dry_eq_prot = "6-step" # "6-step" or "12-step"
-
-use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
+dry_eq_prot = "6-step" 
 
 run_param = True
-run_dry = False
-run_hyd = False
-run_cond = False
+run_dry = True
+run_hyd = True
+run_cond = True
+
+use_gpu = True
 
 # ====
 # Paths / Folders
@@ -76,7 +76,7 @@ run_cond = False
 base_dir = os.getcwd()
 output = os.path.join(base_dir, 'PolyProton_simulation_process.txt')
 
-polymer_dir = os.path.join(base_dir, polymer)
+simulation_dir = os.path.join(base_dir, "simulation")
 init_dir = os.path.join(polymer_dir, "init")
 dry_eq_dir = os.path.join(polymer_dir, "dry_eq")
 hyd_eq_dir = os.path.join(polymer_dir, "hyd_eq")
