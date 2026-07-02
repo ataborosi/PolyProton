@@ -43,7 +43,6 @@ The simulation workflow is organized into four stages:
 	- Produces trajectories
 
 ## Requirements
-
 The simulation workflow requires the following
 1. Programs:
 - Amber / AmberTools >= 24
@@ -68,4 +67,48 @@ The analysis workflow requires the following
 - matplotlib
 - ovito
 
+## Main simulation settings
+Most user controlled simulation settings are defined near the top of "PolyProton_simulation.py" 
 
+Example:
+```
+polymer = "a1"
+
+conf_num = 50
+conf_selection = "best"          
+conf_prune_rms_thresh = 0.02      
+
+chain_length = 15
+num_chains = 30
+mix_chains = True
+mix_seed = 42
+aligned = True
+
+lam_list = [2, 4, 6, 8, 10, 12]
+cond_lam_list = [12]
+
+dry_eq_prot = "6-step"           
+
+run_param = True
+run_dry = True
+run_hyd = True
+run_cond = True
+```
+
+Important options:
+| Setting | Meaning |
+|---|---|
+| `polymer` | Polymer label, such as `a1`, `a6`, or `a8`. Will create a folder name based on this and perform simulations in it. |
+| `backbone_smiles` | SMILES string of the dianhydride/backbone unit. |
+| `sidechain_smiles` | SMILES string of the sulfonated side chain. |
+| `conf_num` | Target number of conformers to generate. The actual number may be lower after pruning. |
+| `conf_prune_rms_thresh` | RDKit conformer pruning threshold. Smaller values retain more similar conformers; `-1.0` disables pruning. |
+| `conf_selection` | Selects either the best-ranked conformer or a random conformer from the high-energy/diverse conformer pool. |
+| `chain_length` | Number of repeat units in the base polymer chain. |
+| `num_chains` | Number of chains packed into the bulk simulation cell. |
+| `mix_chains` | If `True`, randomly generates a chain-length distribution around the base chain length. |
+| `aligned` | If `True`, uses aligned/compact initial packing. If `False`, uses less-aligned initial orientations. |
+| `lam_list` | Hydration levels to prepare and equilibrate. |
+| `cond_lam_list` | Hydration levels selected for conductivity simulations. These must be included in `lam_list`. |
+| `dry_eq_prot` | Selects the 6-step or 12-step dry equilibration protocol. |
+| `run_param`, `run_dry`, `run_hyd`, `run_cond` | Enable or disable each workflow stage. |
