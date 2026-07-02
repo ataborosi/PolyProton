@@ -154,6 +154,13 @@ polymer = "a1"
 chain_length = 15
 num_chains = 30
 mix_chains = True
+
+hyd_analysis_lam_list = [12]
+cond_analysis_lam_list = [12]
+
+run_dry_analysis = True
+run_hyd_analysis = True
+run_cond_analysis = True
 ```
 
 Therefore, when analyzing a simulation, make sure that `polymer`, `chain_length`, `num_chains`, and `mix_chains` in `PolyProton_analysis.py`
@@ -166,12 +173,13 @@ Important options:
 | `chain_length` | Base polymer chain length used in the simulation. Must match the simulation workflow. |
 | `num_chains` | Number of polymer chains used in the simulation. Must match the simulation workflow. |
 | `mix_chains` | Whether mixed chain lengths were used. Must match the simulation workflow because it changes the system name. |
+| `hyd_analysis_lam_list` | Hydration levels selected for hydrated-system analysis. |
+| `cond_analysis_lam_list` | Hydration levels selected for conductivity analysis. |
 | `run_dry_analysis` | Enables or disables analysis of the dry polymer system. |
 | `run_hyd_analysis` | Enables or disables analysis of hydrated systems. |
 | `run_cond_analysis` | Enables or disables analysis of hydronium-containing conductivity systems. |
 | `dry_eq_prot` | Must match the dry equilibration protocol used in the simulation. It determines which dry production trajectory is analyzed. |
-| `hyd_analysis_lam_list` | Hydration levels selected for hydrated-system analysis. |
-| `cond_analysis_lam_list` | Hydration levels selected for conductivity analysis. |
+
 
 ## Notes and limitations
 
