@@ -28,6 +28,9 @@ chain_length = 15
 num_chains = 30
 mix_chains = False
 
+hyd_analysis_lam_list = [12]
+cond_analysis_lam_list = [12]
+
 run_dry_analysis = True
 run_hyd_analysis = True
 run_cond_analysis = True
@@ -63,9 +66,6 @@ frame_stop = 100
 frame_stride = 10
 overwrite = True
 
-# Hydration levels to analyze
-hyd_analysis_lam_list = [12]
-
 # Hydration production trajectory
 hyd_traj_file = "hyd-eq_5-nvt-pr.nc"
 hyd_restart_file = "hyd-eq_5-nvt-pr.ncrst"
@@ -83,9 +83,6 @@ hyd_rdf_settings = {
 
 # Water cluster settings
 water_oo_cutoff = 3.5
-
-# Conductivity levels to analyze
-cond_analysis_lam_list = [12]
 
 # Conductivity production trajectory
 cond_traj_file = "cond_pr-nvt.nc"
