@@ -27,9 +27,6 @@ polymer = "a1"
 chain_length = 15
 num_chains = 30
 mix_chains = False
-aligned = True
-conf_selection = "best"
-run_id = "r1"
 
 run_dry_analysis = True
 run_hyd_analysis = True
@@ -140,15 +137,17 @@ base_dir = os.getcwd()
 
 # expected folder structure:
 # base_dir/
-#	run/
+#	simulation/
 #	  init/
 #	  dry_eq/
 #	  hyd_eq/
 #	  cond_pr/
 #	analysis/
 #	  dry/
+#	  hyd/
+#	  cond/        
 
-simulation_dir = os.path.join(base_dir, "run")
+simulation_dir = os.path.join(base_dir, "simulation")
 dry_eq_dir = os.path.join(simulation_dir, "dry_eq")
 hyd_eq_dir = os.path.join(simulation_dir, "hyd_eq")
 cond_pr_dir = os.path.join(simulation_dir, "cond_pr")
@@ -657,14 +656,11 @@ def fit_msd_diffusion(msd_df):
 	return result
 
 def log_general_settings():
-	log_message("SPI conductivity analysis workflow")
+	log_message("PolyProton analysis workflow")
 	log_message(f"\tpolymer = {polymer}")
 	log_message(f"\tchain_length = {chain_length}")
 	log_message(f"\tnum_chains = {num_chains}")
 	log_message(f"\tmix_chains = {mix_chains}")
-	log_message(f"\taligned = {aligned}")
-	log_message(f"\tconf_selection = {conf_selection}")
-	log_message(f"\trun_id = {run_id}")
 	log_message(f"\tbase_dir = {base_dir}")
 	log_message(f"\tsimulation_dir = {simulation_dir}")
 	log_message(f"\tanalysis_dir = {analysis_dir}")
@@ -1064,9 +1060,6 @@ class Dry_SummaryWriter:
 			"chain_length": chain_length,
 			"num_chains": num_chains,
 			"mix_chains": mix_chains,
-			"aligned": aligned,
-			"conf_selection": conf_selection,
-			"run_id": run_id,
 			"dry_eq_prot": dry_eq_prot,
 			"trajectory": dry_traj_file,
 			"restart": dry_restart_file,
@@ -1536,9 +1529,6 @@ class Hyd_SummaryWriter:
 			"chain_length": chain_length,
 			"num_chains": num_chains,
 			"mix_chains": mix_chains,
-			"aligned": aligned,
-			"conf_selection": conf_selection,
-			"run_id": run_id,
 			"trajectory": hyd_traj_file,
 			"restart": hyd_restart_file,
 			"frame_start": frame_start,
@@ -1916,9 +1906,6 @@ class Cond_SummaryWriter:
 			"chain_length": chain_length,
 			"num_chains": num_chains,
 			"mix_chains": mix_chains,
-			"aligned": aligned,
-			"conf_selection": conf_selection,
-			"run_id": run_id,
 			"trajectory": cond_traj_file,
 			"restart": cond_restart_file,
 			"cond_frame_start": cond_frame_start,
