@@ -68,7 +68,7 @@ The analysis workflow requires the following
 - ovito
 
 ## Main simulation settings
-Most user controlled simulation settings are defined near the top of "PolyProton_simulation.py" 
+Most user controlled simulation settings are defined near the top of "PolyProton_simulation.py". 
 The simulation workflow is intended to be run from the project root directory.
 Simulation files are written under the `simulation/` folder, while analysis results are written
 separately under the `analysis/` folder.
@@ -127,7 +127,10 @@ Important options:
 | `lam_list` | Hydration levels prepared and equilibrated during the hydration workflow. Hydration level defined by λ, thus the number of water molecules equivalent to sulfonic acid group.  |
 | `cond_lam_list` | Hydration levels selected for conductivity simulations. These must be included in `lam_list`. |
 | `dry_eq_prot` | Selects the 6-step or 12-step dry equilibration protocol. |
-| `run_param`, `run_dry`, `run_hyd`, `run_cond` | Enable or disable each workflow stage. |
+| `run_param` | Enables or disables monomer parameterization and polymer-chain generation. |
+| `run_dry` | Enables or disables dry polymer packing and dry equilibration. |
+| `run_hyd` | Enables or disables hydrated polymer equilibration. |
+| `run_cond`  | Enables or disables hydronium-containing conductivity simulations. |
 | `use_gpu` | Controls Amber MD execution mode. If `True`, supported MD steps use `pmemd.cuda`. If `False`, all Amber MD steps use `pmemd.MPI`. |
 
 GPU/CPU exacution
@@ -140,7 +143,45 @@ use_gpu = False
 ```
 To run the workflow only in CPU/MPI mode with `pmemd.MPI`.
 
-WORKFLOW run
-python3 PolyProton_simulation.py
-
 ## Main analysis settings
+The analysis workflow is controlled near the top of "PolyProton_analysis.py".
+The following settings must match the simulation settings because they are used to reconstruct 
+the expected system names and locate the correct simulation files:
+
+```
+polymer = "a1"
+
+chain_length = 15
+num_chains = 30
+mix_chains = True
+```
+
+Therefore, when analyzing a simulation, make sure that `polymer`, `chain_length`, `num_chains`, and `mix_chains` in `PolyProton_analysis.py`
+are the same as those used in `PolyProton_simulation.py`.
+
+Important options:
+| Setting | Meaning |
+|---|---|
+| `polymer` | Polymer label used to identify the system. Must match the simulation workflow. |
+| `chain_length` | Base polymer chain length used in the simulation. Must match the simulation workflow. |
+| `num_chains` | Number of polymer chains used in the simulation. Must match the simulation workflow. |
+| `mix_chains` | Whether mixed chain lengths were used. Must match the simulation workflow because it changes the system name. |
+| `run_dry_analysis` | Enables or disables analysis of the dry polymer system. |
+| `run_hyd_analysis` | Enables or disables analysis of hydrated systems. |
+| `run_cond_analysis` | Enables or disables analysis of hydronium-containing conductivity systems. |
+| `dry_eq_prot` | Must match the dry equilibration protocol used in the simulation. It determines which dry production trajectory is analyzed. |
+| `hyd_analysis_lam_list` | Hydration levels selected for hydrated-system analysis. |
+| `cond_analysis_lam_list` | Hydration levels selected for conductivity analysis. |
+
+## Notes and limitations
+
+- The workflow assumes that required input templates, water/hydronium PDB files, Amber input files, and force-field files are present in `input_files/`.
+- The current conductivity calculation is based on hydronium vehicle diffusion and Nernst-Einstein conductivity.
+- The conductivity simulation is set to 100 ns, which cannot be changed right now. 
+- Fitting window for MSD is set to 10-100 ns by default. This should be checked for each system to ensure that the selected time range is approximately linear.
+- The water-cluster analysis uses an O-O cutoff of 3.5 Angstrom. This cutoff should be kept consistent when comparing systems.
+- The hydronium-sulfonate residence analysis uses a 4.0 Angstrom cutoff. This cutoff is a structural definition of bound/contacting hydronium and may need sensitivity testing.
+- If `mix_chains = True`, the reported system name keeps the base chain length but the actual chain-length distribution is written to the workflow log.
+- The actual number of generated conformers may be smaller than `conf_num` because of conformer embedding or pruning.
+
+
