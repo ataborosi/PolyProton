@@ -6,7 +6,7 @@
 This repository contains as automated workflow for constructing, equlibrating, and analyzing
 sulfonated polyimide (SPI) electrolyte systems for proton conductivity studies. The workflow
 is designed around Amber molecular dynamics simulations and post processing of dry, hydrated
-and H3O+ containing conductivity systems. The workflows is currently tailored to sulfonated
+and hydronium containing conductivity systems. The workflows is currently tailored to sulfonated
 polyimide, but the code structure can be adapted to related polymer electrolyte systems by 
 chaning the monomer SMILES definitions, residue templates, input files, and analysis settings.
 
@@ -45,13 +45,13 @@ The simulation workflow is organized into four stages:
 ## Requirements
 
 The simulation workflow requires the following
-Programs:
+1. Programs:
 - Amber / AmberTools >= 24
 - ORCA >= 5.0.3
 - Multiwfn >= 3.8
 - OpenBabel = 3.0.0!
 - Packmol >= 20.15.1
-Python packages (python >= 3.8)
+2. Python packages (python >= 3.8)
 - ase
 - rdkit
 - mace 
@@ -61,7 +61,7 @@ Python packages (python >= 3.8)
 - biopython
 
 The analysis workflow requires the following
-Python packages (python >= 3.8)
+1. Python packages (python >= 3.8)
 - numpy
 - pandas
 - scipy
