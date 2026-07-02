@@ -184,4 +184,14 @@ Important options:
 - If `mix_chains = True`, the reported system name keeps the base chain length but the actual chain-length distribution is written to the workflow log.
 - The actual number of generated conformers may be smaller than `conf_num` because of conformer embedding or pruning.
 
+## License
 
+PolyProton is distributed under the BSD 3-Clause License.
+This license applies only to the PolyProton source code and documentation in this repository.
+External software packages used by the workflow, including Amber/AmberTools, ORCA, Multiwfn, OpenBabel, Packmol, OVITO, MACE, RDKit, ASE, and other dependencies,
+are distributed under their own licenses. Users are responsible for obtaining and using these third-party programs according to their respective license terms.
+
+## Citation
+
+If you use PolyProton in academic work, please cite the associated publication.
+Citation information will be added after publication.
