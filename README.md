@@ -44,12 +44,28 @@ The simulation workflow is organized into four stages:
 
 ## Requirements
 
-The simulation workflow requires the following programs and python packages
-
-- ASE
-- RdKit
-- MACE 
-- ORCA >= 5.0.3
-- Multiwfn
-- OpenBabel
+The simulation workflow requires the following
+Programs:
 - Amber / AmberTools >= 24
+- ORCA >= 5.0.3
+- Multiwfn >= 3.8
+- OpenBabel = 3.0.0!
+- Packmol >= 20.15.1
+Python packages (python >= 3.8)
+- ase
+- rdkit
+- mace 
+- numpy
+- pandas
+- scipy
+- biopython
+
+The analysis workflow requires the following
+Python packages (python >= 3.8)
+- numpy
+- pandas
+- scipy
+- matplotlib
+- ovito
+
+
