@@ -55,6 +55,8 @@ chain_length = 15
 num_chains = 30
 mix_chains = True
 mix_seed = 42
+mix_chain_fraction = 0.20
+pack_z_padding = 15.0
 aligned = True
 
 lam_list = [2, 4, 6, 8, 10, 12]
@@ -77,10 +79,10 @@ base_dir = os.getcwd()
 output = os.path.join(base_dir, 'PolyProton_simulation_process.txt')
 
 simulation_dir = os.path.join(base_dir, "simulation")
-init_dir = os.path.join(polymer_dir, "init")
-dry_eq_dir = os.path.join(polymer_dir, "dry_eq")
-hyd_eq_dir = os.path.join(polymer_dir, "hyd_eq")
-cond_pr_dir = os.path.join(polymer_dir, "cond_pr")
+init_dir = os.path.join(simulation_dir, "init")
+dry_eq_dir = os.path.join(simulation_dir, "dry_eq")
+hyd_eq_dir = os.path.join(simulation_dir, "hyd_eq")
+cond_pr_dir = os.path.join(simulation_dir, "cond_pr")
 input_dir = os.path.join(base_dir, "input_files")
 dry_eq_input_dir = os.path.join(input_dir, "dry_eq", dry_eq_prot)
 hyd_eq_input_dir = os.path.join(input_dir, "hyd_eq")
@@ -98,7 +100,7 @@ def log_message(message):
 		print(message, file=f)
 
 def ensure_directories():
-	os.makedirs(polymer_dir, exist_ok=True)
+	os.makedirs(simulation_dir, exist_ok=True)
 	os.makedirs(init_dir, exist_ok=True)
 	os.makedirs(dry_eq_dir, exist_ok=True)
 	os.makedirs(hyd_eq_dir, exist_ok=True)
@@ -150,16 +152,30 @@ def get_generated_conf_indices(polymer):
 
 	return sorted(set(conf_indices))
 
-def generate_chain_lengths(chain_length, num_chains, mix_chains=False, seed=42):
+def generate_chain_lengths(chain_length, num_chains, mix_chains=False, seed=42, mix_fraction=0.20):
 	if not mix_chains:
 		return [int(chain_length)] * int(num_chains)
 
-	half_range = int(math.ceil(chain_length / 2))
-	min_len = max(2, int(chain_length - half_range))
-	max_len = int(chain_length + half_range)
+	if not 0.0 < mix_fraction < 1.0:
+		raise ValueError("mix_fraction must be between 0 and 1")
 
-	random.seed(seed)
-	return [random.randint(min_len, max_len) for _ in range(num_chains)]
+	max_deviation = max(1, int(round(chain_length * mix_fraction)))
+	max_deviation = min(max_deviation, chain_length - 2)
+	rng = random.Random(seed)
+	deviations = []
+	
+	for _ in range(num_chains // 2):
+		d = rng.randint(0, max_deviation)
+		deviations.extend([-d, d])	  
+
+	if num_chains % 2 == 1:
+		deviations.append(0)
+
+	rng.shuffle(deviations)
+
+	chain_lengths = [chain_length + deviation for deviation in deviations]
+
+	return chain_lengths
 
 def system_name(polymer, chain_length, num_chains, mix_chains=False):
 	if mix_chains:
@@ -242,6 +258,12 @@ def log_settings(chain_lengths, system_tag, nproc):
 	log_message(f"\tnum_chains = {num_chains}")
 	log_message(f"\tmix_chains = {mix_chains}")
 	log_message(f"\tchain_lengths = {chain_lengths}")
+	log_message(f"\tmix_chain_fraction = {mix_chain_fraction}")
+	log_message(f"\tminimum chain length = {min(chain_lengths)}")
+	log_message(f"\tmaximum chain length = {max(chain_lengths)}")
+	log_message(f"\tmean chain length = {np.mean(chain_lengths):.3f}")
+	log_message(f"\ttotal repeat units = {sum(chain_lengths)}")
+	log_message(f"\tpack_z_padding = {pack_z_padding}")
 	log_message(f"\taligned = {aligned}")
 	log_message(f"\tdry_eq_prot = {dry_eq_prot}")
 	log_message(f"\tlam_list = {lam_list}")
@@ -1026,13 +1048,14 @@ class GAFF2Param:
 # ====
 
 class Dry_BulkCreator:
-	def __init__(self, polymer, chain_length, num_chains, mix_chains=False, chain_lengths=None, aligned=True):
+	def __init__(self, polymer, chain_length, num_chains, mix_chains=False, chain_lengths=None, aligned=True, z_padding=15.0):
 		self.polymer = polymer
 		self.chain_length = chain_length
 		self.num_chains = num_chains
 		self.mix_chains = mix_chains
-		self.chain_lengths = chain_lengths if chain_lengths else [chain_length] * num_chains
+		self.chain_lengths = chain_lengths is not None
 		self.aligned = aligned
+		self.z_padding = float(z_padding)
 		self.box_size_x = 0
 		self.box_size_y = 0
 		self.box_size_z = 0
@@ -1099,7 +1122,7 @@ class Dry_BulkCreator:
 			dim_x, dim_y, dim_z = max_coords - min_coords
 			polymer_volume = dim_x * dim_y * dim_z
 			total_box_volume = polymer_volume * self.num_chains
-			box_height = dim_z + 30
+			box_height = dim_z + 2.0 * self.z_padding
 			box_side_area = total_box_volume / box_height
 
 			if self.aligned:
@@ -1122,7 +1145,7 @@ class Dry_BulkCreator:
 		max_dim_z = max(dim_zs)
 
 		total_box_volume = sum((dx * dy * dz) * k for (dx, dy, dz), k in zip(self.dims, counts))
-		box_height = max_dim_z + 30.0
+		box_height = max_dim_z + 2.0 * self.z_padding
 		box_side_area = total_box_volume / box_height
 
 		if self.aligned:
@@ -1154,14 +1177,37 @@ class Dry_BulkCreator:
 				f.write("connect no\n")
 				f.write("end structure\n")
 			else:
-				for L, rotated_pdb in zip(self.unique_lengths, self.rotated_pdbs):
+				z_center = 0.5 * self.box_size_z			
+				for L, rotated_pdb, dimensions in zip(
+					self.unique_lengths,
+					self.rotated_pdbs,
+					self.dims
+				):
+					dim_z = float(dimensions[2])			
+					if self.aligned:
+						z_lower = z_center - 0.5 * dim_z - self.z_padding
+						z_upper = z_center + 0.5 * dim_z + self.z_padding			 
+						z_lower = max(0.0, z_lower)
+						z_upper = min(self.box_size_z, z_upper)
+					else:
+						z_lower = 0.0
+						z_upper = self.box_size_z
+			
 					f.write(f"structure {rotated_pdb}\n")
 					f.write(f"number {self.length_counts[L]}\n")
-					f.write(f"inside box 0. 0. 0. {self.box_size_x} {self.box_size_y} {self.box_size_z}\n")
+					f.write(
+						f"inside box "
+						f"0.0 0.0 {z_lower:.3f} "
+						f"{self.box_size_x:.3f} "
+						f"{self.box_size_y:.3f} "
+						f"{z_upper:.3f}\n"
+					)
+			
 					if self.aligned:
 						f.write("constrain_rotation x 0. 0.\n")
 						f.write("constrain_rotation y 0. 0.\n")
 						f.write("constrain_rotation z 0. 0.\n")
+			
 					f.write("connect no\n")
 					f.write("end structure\n")
 	
@@ -1653,7 +1699,7 @@ def run_dry_workflow(chain_lengths, system_tag, nproc):
 	os.chdir(init_dir)
 
 	dry_bulk_creator = Dry_BulkCreator(
-		polymer, chain_length, num_chains, mix_chains, chain_lengths, aligned
+		polymer, chain_length, num_chains, mix_chains, chain_lengths, aligned, pack_z_padding
 	)
 	dry_bulk_creator.create_bulk_phase()
 
@@ -2005,7 +2051,7 @@ def run_workflow():
 	os.chdir(init_dir)
 
 	nproc = get_nproc()
-	chain_lengths = generate_chain_lengths(chain_length, num_chains, mix_chains, mix_seed)
+	chain_lengths = generate_chain_lengths(chain_length, num_chains, mix_chains, mix_seed, mix_chain_fraction)
 	system_tag = system_name(polymer, chain_length, num_chains, mix_chains)
 	conf_output_file = f"{polymer}_conf.txt"
 
