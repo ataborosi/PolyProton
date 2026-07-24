@@ -30,9 +30,12 @@ warnings.simplefilter("ignore")
 # ====
 
 from mace.calculators import mace_off
+from contextlib import redirect_stdout, redirect_stderr
+with open(os.devnull, "w") as devnull:
+	with redirect_stdout(devnull), redirect_stderr(devnull):
+		nnp_calc = mace_off(model="small", device="cpu")
 from ase.calculators.orca import ORCA
 from ase.calculators.orca import OrcaProfile
-nnp_calc = mace_off(model="small", device='cpu')
 profile = OrcaProfile(command='/opt/orca/orca')
 
 # ====
@@ -45,7 +48,7 @@ backbone_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
 sidechain_smiles = "OCCCS(O)(=O)=O"
 benzene_smiles = "C1=CC=CC=C1"
 
-conf_num = 50
+conf_num = 2
 conf_selection = "best"			 
 temperature = 300
 conf_far_fraction = 0.5
@@ -77,6 +80,7 @@ use_gpu = True
 
 base_dir = os.getcwd()
 output = os.path.join(base_dir, 'PolyProton_simulation_process.txt')
+command_log = os.path.join(base_dir, "PolyProton_simulation_command.txt")
 
 simulation_dir = os.path.join(base_dir, "simulation")
 init_dir = os.path.join(simulation_dir, "init")
@@ -98,6 +102,24 @@ def get_nproc(default=4):
 def log_message(message):
 	with open(output, 'a') as f:
 		print(message, file=f)
+
+def run_command(command):
+#	log_message(f"Running command: {command}")
+
+	with open(command_log, "a", encoding="utf-8") as log:
+		log.write(f"\n\n$ {command}\n")
+		log.flush()
+
+		try:
+			subprocess.run(command, shell=True, check=True, stdout=log, stderr=subprocess.STDOUT)
+		except subprocess.CalledProcessError as exc:
+			error_message = (
+				f"External command failed with return code "
+				f"{exc.returncode}: {command}"
+			)
+			log.write(f"\nERROR: {error_message}\n")
+			log_message(error_message)
+			raise RuntimeError(error_message) from exc
 
 def ensure_directories():
 	os.makedirs(simulation_dir, exist_ok=True)
@@ -782,6 +804,7 @@ class GAFF2Param:
 		write(mol_out, mol)
 		
 	def orca_calculation(self, mol, charge, mult, file_name):
+		log_message(f"\tSingle point energy calculation on selected conformer")
 		orca_calc = ORCA(
 			profile=profile,
 			orcasimpleinput='wb97x-d4 def2-svp def2/j rijcosx tightscf',
@@ -797,22 +820,23 @@ class GAFF2Param:
 				shutil.move(f, new_name)	
 		orca_command = f'/opt/orca/orca_2mkl {file_name} -molden'
 		
-		subprocess.run(orca_command, shell=True, check=True)
+		run_command(orca_command)
 
 	def run_multiwfn(self, file_name):
+		log_message(f"\tRESP charge analysis on selected conformer")
 		molden_file = f'{file_name}.molden.input'
 		multiwfn_input = f'{molden_file}\n7\n18\n10\n2\n1\ny\n0\n0\nq\n'
 		with open("multiwfn_input.txt", "w") as input_file:
 			input_file.write(multiwfn_input)
 		multiwfn_command = f'Multiwfn < multiwfn_input.txt -set /opt/multiwfn/settings.ini'
 		
-		subprocess.run(multiwfn_command, shell=True, check=True)
+		run_command(multiwfn_command)
 
 	def convert_xyz_to_mol2(self, xyz_file, file_name):
 		mol2_file = f'{file_name}.mol2'
 		obabel_command = f'obabel -i xyz {xyz_file} -O {mol2_file}'
 		
-		subprocess.run(obabel_command, shell=True, check=True)
+		run_command(obabel_command)
 
 	def modify_mol2_file(self, file_name, mod_file_name):
 		mol2_file = f'{file_name}.mol2'
@@ -949,13 +973,13 @@ class GAFF2Param:
 
 	def run_antechamber_v1(self):
 		antechamber_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_mod.mol2 -fi mol2 -o {self.polymer}_gaff2.mol2 -fo mol2 -at gaff2'
-		subprocess.run(antechamber_command_1, shell=True, check=True)
+		run_command(antechamber_command_1)
 
 		antechamber_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_gaff2.mol2 -fi mol2 -o {self.polymer}.ac -fo ac'
-		subprocess.run(antechamber_command_2, shell=True, check=True)
+		run_command(antechamber_command_2)
 
 		antechamber_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/parmchk2 -i {self.polymer}_gaff2.mol2 -f mol2 -o {self.polymer}_gaff2.frcmod -s 2'
-		subprocess.run(antechamber_command_3, shell=True, check=True)
+		run_command(antechamber_command_3)
 
 		self.write_connectivity_cards(f"{self.polymer}_gaff2.mol2", so3=False)
 
@@ -963,19 +987,19 @@ class GAFF2Param:
 		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o h.prepi -f prepi -m head.card -rn H'
 		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o t.prepi -f prepi -m tail.card -rn T'
 
-		subprocess.run(prepgen_command_1, shell=True, check=True)
-		subprocess.run(prepgen_command_2, shell=True, check=True)
-		subprocess.run(prepgen_command_3, shell=True, check=True)
+		run_command(prepgen_command_1)
+		run_command(prepgen_command_2)
+		run_command(prepgen_command_3)
 
 	def run_antechamber_v2(self):
 		antechamber_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_so3_mod.mol2 -fi mol2 -o {self.polymer}_so3_gaff2.mol2 -fo mol2 -at gaff2'
-		subprocess.run(antechamber_command_1, shell=True, check=True)
+		run_command(antechamber_command_1)
 
 		antechamber_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_so3_gaff2.mol2 -fi mol2 -o {self.polymer}_so3.ac -fo ac'
-		subprocess.run(antechamber_command_2, shell=True, check=True)
+		run_command(antechamber_command_2)
 
 		antechamber_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/parmchk2 -i {self.polymer}_so3_gaff2.mol2 -f mol2 -o {self.polymer}_so3_gaff2.frcmod -s 2'
-		subprocess.run(antechamber_command_3, shell=True, check=True)
+		run_command(antechamber_command_3)
 
 		self.write_connectivity_cards(f"{self.polymer}_so3_gaff2.mol2", so3=True)
 
@@ -983,9 +1007,9 @@ class GAFF2Param:
 		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o h_so3.prepi -f prepi -m head_so3.card -rn H'
 		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o t_so3.prepi -f prepi -m tail_so3.card -rn T'
 
-		subprocess.run(prepgen_command_1, shell=True, check=True)
-		subprocess.run(prepgen_command_2, shell=True, check=True)
-		subprocess.run(prepgen_command_3, shell=True, check=True)
+		run_command(prepgen_command_1)
+		run_command(prepgen_command_2)
+		run_command(prepgen_command_3)
 
 	def create_polymer_chain(self, chain_length):
 		if chain_length is None:
@@ -1011,7 +1035,7 @@ class GAFF2Param:
 			f.write(f'saveamberparm mol {self.polymer}_n-{chain_length}.prmtop {self.polymer}_n-{chain_length}.inpcrd\n')
 			f.write('quit\n')
 		
-		subprocess.run(f'tleap -f {leap_input_filename} > {leap_output_filename}', shell=True, check=True)
+		run_command(f'tleap -f {leap_input_filename} > {leap_output_filename}')
 	
 	def parameterization(self, selected_conf):
 		read_xyz_1 = read(f'{self.polymer}_{selected_conf}_opt.xyz')
@@ -1053,7 +1077,7 @@ class Dry_BulkCreator:
 		self.chain_length = chain_length
 		self.num_chains = num_chains
 		self.mix_chains = mix_chains
-		self.chain_lengths = chain_lengths is not None
+		self.chain_lengths = (list(chain_lengths) if chain_lengths is not None else [int(chain_length)] * int(num_chains))
 		self.aligned = aligned
 		self.z_padding = float(z_padding)
 		self.box_size_x = 0
@@ -1211,8 +1235,7 @@ class Dry_BulkCreator:
 					f.write("connect no\n")
 					f.write("end structure\n")
 	
-		subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True, check=True)
-#		subprocess.run('packmol < packmol_input.inp', shell=True)
+		run_command('packmol < packmol_input.inp')
 	
 	def create_bulk_phase(self):
 		self.prepare_rotated_chains()
@@ -1250,9 +1273,9 @@ class Dry_AmberParams:
 		self.inpcrd = f"{self.system_tag}.inpcrd"
 		amber_pdb = f"{self.system_tag}_amber.pdb"
 
-		subprocess.run('tleap -f final_leap_input.in > final_leap_input.out', shell=True, check=True)
+		run_command('tleap -f final_leap_input.in > final_leap_input.out')
 		ambpdb_command = f"ambpdb -p {self.prmtop} -c {self.inpcrd} > {amber_pdb}"
-		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		run_command(ambpdb_command)
 
 class Dry_MDSimulation():
 	def __init__(self, nproc, output, amber_params: Dry_AmberParams, use_gpu=True):
@@ -1292,10 +1315,8 @@ class Dry_MDSimulation():
 		else:
 			cmd = f"mpirun -np {self.nproc} pmemd.MPI -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args}"
 
-		result = subprocess.run(cmd, shell=True)
-		if result.returncode != 0:
-			raise RuntimeError(f"{step_name} step failed")
-
+		run_command(cmd)
+		
 		subprocess.run(f"cp * {self.dir1}", shell=True, check=True)
 		shutil.rmtree(temp_dir)
 
@@ -1381,7 +1402,7 @@ class Hyd_BulkCreator:
 			end structure
 			""")
 
-		subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True, check=True)
+		run_command('packmol < packmol_input.inp')
 
 	def create_bulk_phase(self):
 		self.packmol_generate_box()
@@ -1420,9 +1441,10 @@ class Hyd_AmberParams:
 		self.inpcrd = f"{self.system_tag}.inpcrd"
 		amber_pdb = f"{self.system_tag}_amber.pdb"
 	
-		subprocess.run('tleap -f final_leap_input.in > final_leap_input.out', shell=True, check=True)
+		run_command('tleap -f final_leap_input.in > final_leap_input.out')
 		ambpdb_command = f"ambpdb -p {self.prmtop} -c {self.inpcrd} > {amber_pdb}"
-		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		run_command(ambpdb_command)
+
 
 class Hyd_MDSimulation():
 	def __init__(self, nproc, output, amber_params: Hyd_AmberParams, use_gpu=True):
@@ -1463,9 +1485,7 @@ class Hyd_MDSimulation():
 		else:
 			cmd = f"mpirun -np {self.nproc} pmemd.MPI -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args}"
 
-		result = subprocess.run(cmd, shell=True)
-		if result.returncode != 0:
-			raise RuntimeError(f"{step_name} step failed for lambda={self.lam}")
+		run_command(cmd)
 
 		subprocess.run(f"cp * {self.dir1}", shell=True, check=True)
 		shutil.rmtree(temp_dir)
@@ -1531,7 +1551,7 @@ class Cond_BulkCreator:
 			end structure
 			""")
 	
-		subprocess.run('/opt/packmol/packmol-20.15.1/packmol < packmol_input.inp', shell=True, check=True)
+		run_command('packmol < packmol_input.inp')
 	
 	def create_bulk_phase(self):
 		self.packmol_generate_box()
@@ -1573,9 +1593,9 @@ class Cond_AmberParams:
 		self.inpcrd = f"{self.system_tag}.inpcrd"
 		amber_pdb = f"{self.system_tag}_amber.pdb"
 	
-		subprocess.run('tleap -f final_leap_input.in > final_leap_input.out', shell=True, check=True)
+		run_command('tleap -f final_leap_input.in > final_leap_input.out')
 		ambpdb_command = f"ambpdb -p {self.prmtop} -c {self.inpcrd} > {amber_pdb}"
-		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		run_command(ambpdb_command)
 
 class Cond_MDSimulation:
 	def __init__(self, nproc, output, amber_params: Cond_AmberParams, use_gpu=True):
@@ -1615,9 +1635,7 @@ class Cond_MDSimulation:
 		else:
 			cmd = f"mpirun -np {self.nproc} pmemd.MPI -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args}"
 
-		result = subprocess.run(cmd, shell=True)
-		if result.returncode != 0:
-			raise RuntimeError(f"{step_name} step failed")
+		run_command(cmd)
 
 		subprocess.run(f"cp * {self.dir1}", shell=True, check=True)
 		shutil.rmtree(temp_dir)
@@ -1643,7 +1661,7 @@ class Cond_MDSimulation:
 class Analysis():
 	def merge_nc_files(self, prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file):
 		ambpdb_command = f"ambpdb -p {prmtop_file} -c {ncrst_file} > {pdb_file}"
-		subprocess.run(ambpdb_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		run_command(ambpdb_command)
 		
 		with open(cpptraj_file, 'w') as file:
 			for nc_file in nc_files:			
@@ -1651,10 +1669,10 @@ class Analysis():
 			file.write(f"trajout {prefix} pdb multi\n")
 		
 		cpptraj_command = f"cpptraj -i {cpptraj_file} -p {prmtop_file}"
-		subprocess.run(cpptraj_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		run_command(cpptraj_command)
 		
 		merge_command = f"ls -v {prefix}* | xargs cat > {merged_pdb}"
-		subprocess.run(merge_command, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		run_command(merge_command)
 		
 		for file in os.listdir():
 			if file.startswith(prefix):
