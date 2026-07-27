@@ -9,11 +9,6 @@ cd $SLURM_SUBMIT_DIR
 export "PATH=$PATH:/opt/openmpi/bin"
 export "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/openmpi/lib"
 
-#AMBER
-export AMBERHOME=$AMBERHOME:/opt/amber/amber24
-export PATH=$PATH:$AMBERHOME/bin
-source /opt/amber/amber24/amber.sh
-
 DIR1=`pwd`
 DIR2=$RANDOM
 UNAME=`whoami`
