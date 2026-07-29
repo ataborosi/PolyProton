@@ -91,6 +91,8 @@ chain_length = 15
 num_chains = 30
 mix_chains = True
 mix_seed = 42
+mix_chain_fraction = 0.20
+pack_z_padding = 15.0
 aligned = True
 
 lam_list = [2, 4, 6, 8, 10, 12]
@@ -104,7 +106,6 @@ run_hyd = True
 run_cond = True
 
 use_gpu = True
-
 ```
 
 Important options:
@@ -123,6 +124,8 @@ Important options:
 | `num_chains` | Number of chains packed into the bulk simulation cell. This value is also used in generated file names. |
 | `mix_chains` | If `True`, generates a distribution of chain lengths around chain_length. If `False`, all chains use exactly `chain_length`. This value also affects generated file names. |
 | `mix_seed` | Random seed used to generate mixed chain lengths when `mix_chains = True`. |
+| `mix_chain_fraction` | Maximum fractional deviation from chain_length used for mixed-chain systems. For example, 0.20 gives chain lengths within approximately ±20% of the base chain length. |
+| `pack_z_padding` | Extra z-direction padding, in Angstrom, used during initial Packmol dry-bulk construction. Larger values give more space along the chain/alignment direction during packing. |
 | `aligned` | If `True`, uses aligned/compact initial packing. If `False`, uses less-aligned initial orientations. |
 | `lam_list` | Hydration levels prepared and equilibrated during the hydration workflow. Hydration level defined by λ, thus the number of water molecules equivalent to sulfonic acid group.  |
 | `cond_lam_list` | Hydration levels selected for conductivity simulations. These must be included in `lam_list`. |
@@ -133,7 +136,7 @@ Important options:
 | `run_cond`  | Enables or disables hydronium-containing conductivity simulations. |
 | `use_gpu` | Controls Amber MD execution mode. If `True`, supported MD steps use `pmemd.cuda`. If `False`, all Amber MD steps use `pmemd.MPI`. |
 
-GPU/CPU exacution
+GPU/CPU execution
 ```
 use_gpu = True
 ```
