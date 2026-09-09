@@ -972,40 +972,40 @@ class GAFF2Param:
 			f.write("CHARGE 0.0\n")
 
 	def run_antechamber_v1(self):
-		antechamber_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_mod.mol2 -fi mol2 -o {self.polymer}_gaff2.mol2 -fo mol2 -at gaff2'
+		antechamber_command_1 = f'antechamber -i {self.polymer}_mod.mol2 -fi mol2 -o {self.polymer}_gaff2.mol2 -fo mol2 -at gaff2'
 		run_command(antechamber_command_1)
 
-		antechamber_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_gaff2.mol2 -fi mol2 -o {self.polymer}.ac -fo ac'
+		antechamber_command_2 = f'antechamber -i {self.polymer}_gaff2.mol2 -fi mol2 -o {self.polymer}.ac -fo ac'
 		run_command(antechamber_command_2)
 
-		antechamber_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/parmchk2 -i {self.polymer}_gaff2.mol2 -f mol2 -o {self.polymer}_gaff2.frcmod -s 2'
+		antechamber_command_3 = f'parmchk2 -i {self.polymer}_gaff2.mol2 -f mol2 -o {self.polymer}_gaff2.frcmod -s 2'
 		run_command(antechamber_command_3)
 
 		self.write_connectivity_cards(f"{self.polymer}_gaff2.mol2", so3=False)
 
-		prepgen_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o {self.polymer}_m.prepi -f prepi -m main.card -rn {self.polymer}'
-		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o h.prepi -f prepi -m head.card -rn H'
-		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}.ac -o t.prepi -f prepi -m tail.card -rn T'
+		prepgen_command_1 = f'prepgen -i {self.polymer}.ac -o {self.polymer}_m.prepi -f prepi -m main.card -rn {self.polymer}'
+		prepgen_command_2 = f'prepgen -i {self.polymer}.ac -o h.prepi -f prepi -m head.card -rn H'
+		prepgen_command_3 = f'prepgen -i {self.polymer}.ac -o t.prepi -f prepi -m tail.card -rn T'
 
 		run_command(prepgen_command_1)
 		run_command(prepgen_command_2)
 		run_command(prepgen_command_3)
 
 	def run_antechamber_v2(self):
-		antechamber_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_so3_mod.mol2 -fi mol2 -o {self.polymer}_so3_gaff2.mol2 -fo mol2 -at gaff2'
+		antechamber_command_1 = f'antechamber -i {self.polymer}_so3_mod.mol2 -fi mol2 -o {self.polymer}_so3_gaff2.mol2 -fo mol2 -at gaff2'
 		run_command(antechamber_command_1)
 
-		antechamber_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/antechamber -i {self.polymer}_so3_gaff2.mol2 -fi mol2 -o {self.polymer}_so3.ac -fo ac'
+		antechamber_command_2 = f'antechamber -i {self.polymer}_so3_gaff2.mol2 -fi mol2 -o {self.polymer}_so3.ac -fo ac'
 		run_command(antechamber_command_2)
 
-		antechamber_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/parmchk2 -i {self.polymer}_so3_gaff2.mol2 -f mol2 -o {self.polymer}_so3_gaff2.frcmod -s 2'
+		antechamber_command_3 = f'parmchk2 -i {self.polymer}_so3_gaff2.mol2 -f mol2 -o {self.polymer}_so3_gaff2.frcmod -s 2'
 		run_command(antechamber_command_3)
 
 		self.write_connectivity_cards(f"{self.polymer}_so3_gaff2.mol2", so3=True)
 
-		prepgen_command_1 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o {self.polymer}_m_so3.prepi -f prepi -m main_so3.card -rn {self.polymer}'
-		prepgen_command_2 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o h_so3.prepi -f prepi -m head_so3.card -rn H'
-		prepgen_command_3 = f'/opt/amber/amber24/bin/wrapped_progs/prepgen -i {self.polymer}_so3.ac -o t_so3.prepi -f prepi -m tail_so3.card -rn T'
+		prepgen_command_1 = f'prepgen -i {self.polymer}_so3.ac -o {self.polymer}_m_so3.prepi -f prepi -m main_so3.card -rn {self.polymer}'
+		prepgen_command_2 = f'prepgen -i {self.polymer}_so3.ac -o h_so3.prepi -f prepi -m head_so3.card -rn H'
+		prepgen_command_3 = f'prepgen -i {self.polymer}_so3.ac -o t_so3.prepi -f prepi -m tail_so3.card -rn T'
 
 		run_command(prepgen_command_1)
 		run_command(prepgen_command_2)
