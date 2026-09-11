@@ -142,7 +142,7 @@ base_dir = os.getcwd()
 #	analysis/
 #	  dry/
 #	  hyd/
-#	  cond/        
+#	  cond/		   
 
 simulation_dir = os.path.join(base_dir, "simulation")
 dry_eq_dir = os.path.join(simulation_dir, "dry_eq")
@@ -709,6 +709,63 @@ def log_cond_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir):
 	log_message(f"\tmsd_fit_end_ps = {msd_fit_end_ps}")
 	log_message(f"\tcond_temperature_K = {cond_temperature_K}")
 	log_message(f"\th3o_s_residence_cutoff = {h3o_s_residence_cutoff}")
+
+def get_pdb_box_lengths(pdb_file):
+	with open(pdb_file, "r") as f:
+		for line in f:
+			if line.startswith("CRYST1"):
+				return np.array([
+					float(line[6:15]),
+					float(line[15:24]),
+					float(line[24:33]),
+				], dtype=float)
+
+	raise RuntimeError(f"CRYST1 record not found in {pdb_file}")
+
+def iter_pdb_frames(pdb_file):
+	current_positions = []
+	current_box = None
+	last_box = None
+
+	with open(pdb_file, "r") as f:
+		for line in f:
+
+			if line.startswith("CRYST1"):
+				last_box = np.array([
+					float(line[6:15]),
+					float(line[15:24]),
+					float(line[24:33]),
+				], dtype=float)
+				current_box = last_box.copy()
+				continue
+
+			if line.startswith("MODEL"):
+				current_positions = []
+				if last_box is not None:
+					current_box = last_box.copy()
+				continue
+
+			if line.startswith(("ATOM", "HETATM")):
+				current_positions.append([
+					float(line[30:38]),
+					float(line[38:46]),
+					float(line[46:54]),
+				])
+				continue
+
+			if line.startswith(("ENDMDL", "END")):
+				if current_positions:
+					yield (
+						np.asarray(current_positions, dtype=float),
+						None if current_box is None else current_box.copy()
+					)
+					current_positions = []
+
+	if current_positions:
+		yield (
+			np.asarray(current_positions, dtype=float),
+			None if current_box is None else current_box.copy()
+		)
 
 # ====
 # Dry analysis classes
@@ -1315,16 +1372,18 @@ class Hyd_DensityAnalysis:
 		self.last_pdb = last_pdb
 
 	def calculate_density(self):
-		atoms = read(self.last_pdb)
+		box = get_pdb_box_lengths(self.last_pdb)
+		volume_a3 = float(np.prod(box))
 
-		volume_a3 = atoms.get_volume()
-		if volume_a3 <= 0:
-			return np.nan
+		total_mass_amu = 0.0
 
-		total_mass_amu = sum(
-			molecular_weights.get(atom.symbol, 0.0)
-			for atom in atoms
-		)
+		with open(self.last_pdb, "r") as f:
+			for line in f:
+				if not is_atom_line(line):
+					continue
+
+				element = element_from_pdb_line(line)
+				total_mass_amu += molecular_weights.get(element, 0.0)
 
 		density = (total_mass_amu * amu_to_g) / (volume_a3 * angstrom3_to_cm3)
 
@@ -1372,33 +1431,26 @@ class Hyd_NematicOrderAnalysis:
 	def calculate_s2(self):
 		monomer_n_pairs = get_monomer_unit_n_atom_pairs(self.sampled_pdb)
 
-		frames = read(self.sampled_pdb, index=":")
-		if not isinstance(frames, list):
-			frames = [frames]
-
 		rows = []
-
-		for frame_i, atoms in enumerate(frames):
+		
+		for frame_i, (positions, box) in enumerate(
+			iter_pdb_frames(self.sampled_pdb)
+		):
 			vectors = []
-
+		
 			for first_idx, last_idx in monomer_n_pairs:
-				try:
-					vec = atoms.get_distance(
-						first_idx,
-						last_idx,
-						mic=True,
-						vector=True
-					)
-				except Exception:
-					vec = atoms.positions[last_idx] - atoms.positions[first_idx]
-
+				vec = positions[last_idx] - positions[first_idx]
+		
+				if box is not None:
+					vec -= box * np.round(vec / box)
+		
 				norm = np.linalg.norm(vec)
-
+		
 				if norm > 1.0e-12:
 					vectors.append(vec / norm)
-
+		
 			S2 = nematic_order_from_unit_vectors(vectors)
-
+		
 			rows.append({
 				"frame": frame_i,
 				"S2": S2,
@@ -1438,16 +1490,13 @@ class Hyd_WaterClusterAnalysis:
 	def calculate_water_clusters(self):
 		water_o_indices = get_water_oxygen_indices_from_first_model(self.sampled_pdb)
 
-		frames = read(self.sampled_pdb, index=":")
-		if not isinstance(frames, list):
-			frames = [frames]
-
 		rows = []
 
-		for frame_i, atoms in enumerate(frames):
-			box_lengths = atoms.cell.lengths()
-			water_o_positions = atoms.positions[water_o_indices]
-
+		for frame_i, (positions, box_lengths) in enumerate(
+			iter_pdb_frames(self.sampled_pdb)
+		):
+			water_o_positions = positions[water_o_indices]
+		
 			cluster_sizes = calculate_water_cluster_sizes(
 				water_o_positions,
 				box_lengths,
@@ -1683,27 +1732,54 @@ class Cond_H3OMSDAnalysis:
 		self.lam_analysis_dir = lam_analysis_dir
 
 	def load_h3o_positions(self):
-		frames = read(self.h3o_unwrapped_pdb, index=":")
-		if not isinstance(frames, list):
-			frames = [frames]
-
+		h3o_o_indices = get_h3o_oxygen_indices_from_first_model(
+			self.h3o_unwrapped_pdb
+		)
+	
+		num_h3o = len(h3o_o_indices)
+	
+		if num_h3o == 0:
+			raise RuntimeError(
+				"No H3O oxygen atoms found in H3O unwrapped PDB."
+			)
+	
 		positions = []
 		volumes = []
-
-		for atoms in frames:
-			o_indices = [atom.index for atom in atoms if atom.symbol == "O"]
-
-			if len(o_indices) == 0:
-				raise RuntimeError("No O atoms found in H3O unwrapped PDB.")
-
-			positions.append(atoms.positions[o_indices])
-			volumes.append(atoms.get_volume())
-
-		positions = np.array(positions, dtype=float)
-		volumes = np.array(volumes, dtype=float)
-
-		num_h3o = positions.shape[1]
-
+	
+		for frame_i, (frame_positions, box) in enumerate(
+			iter_pdb_frames(self.h3o_unwrapped_pdb)
+		):
+			if box is None:
+				raise RuntimeError(
+					f"No periodic box information found for "
+					f"H3O frame {frame_i}."
+				)
+	
+			if max(h3o_o_indices) >= len(frame_positions):
+				raise RuntimeError(
+					f"H3O atom indices do not match frame {frame_i}: "
+					f"{len(frame_positions)} atoms found."
+				)
+	
+			h3o_positions = frame_positions[h3o_o_indices]
+	
+			if len(h3o_positions) != num_h3o:
+				raise RuntimeError(
+					f"H3O count changed in frame {frame_i}: "
+					f"expected {num_h3o}, found {len(h3o_positions)}."
+				)
+	
+			positions.append(h3o_positions)
+			volumes.append(float(np.prod(box)))
+	
+		if len(positions) == 0:
+			raise RuntimeError(
+				"No frames found in H3O unwrapped PDB."
+			)
+	
+		positions = np.stack(positions, axis=0)
+		volumes = np.asarray(volumes, dtype=float)
+	
 		return positions, volumes, num_h3o
 
 	def calculate_msd(self):
@@ -1813,30 +1889,32 @@ class Cond_ResidenceAnalysis:
 		h3o_o_indices = get_h3o_oxygen_indices_from_first_model(self.sampled_pdb)
 		s_indices = get_s_atom_indices_from_first_model(self.sampled_pdb)
 
-		frames = read(self.sampled_pdb, index=":")
-		if not isinstance(frames, list):
-			frames = [frames]
-
 		rows = []
 		sample_dt_ps = cond_time_between_nc_frames_ps * cond_frame_stride
 
-		for frame_i, atoms in enumerate(frames):
-			h3o_pos = atoms.positions[h3o_o_indices]
-			s_pos = atoms.positions[s_indices]
-			box = atoms.cell.lengths()
-
+		for frame_i, (positions, box) in enumerate(
+			iter_pdb_frames(self.sampled_pdb)
+		):
+			h3o_pos = positions[h3o_o_indices]
+			s_pos = positions[s_indices]
+	
 			num_bound = 0
-
+	
 			for pos in h3o_pos:
 				delta = s_pos - pos
 				delta -= box * np.round(delta / box)
+	
 				distances = np.linalg.norm(delta, axis=1)
-
+	
 				if np.min(distances) <= h3o_s_residence_cutoff:
 					num_bound += 1
-
-			fraction_bound = num_bound / len(h3o_o_indices) if len(h3o_o_indices) > 0 else np.nan
-
+	
+			fraction_bound = (
+				num_bound / len(h3o_o_indices)
+				if len(h3o_o_indices) > 0
+				else np.nan
+			)
+	
 			rows.append({
 				"frame": frame_i,
 				"time_ps": frame_i * sample_dt_ps,
