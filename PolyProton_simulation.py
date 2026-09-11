@@ -294,6 +294,32 @@ def log_settings(chain_lengths, system_tag, nproc):
 	log_message(f"\tnproc = {nproc}")
 	log_message(f"\tuse_gpu = {use_gpu}")
 
+def get_pdb_box_lengths(pdb_file):
+	with open(pdb_file, "r") as f:
+		for line in f:
+			if line.startswith("CRYST1"):
+				a = float(line[6:15])
+				b = float(line[15:24])
+				c = float(line[24:33])
+				return a, b, c
+
+	raise RuntimeError(f"CRYST1 record not found in {pdb_file}")
+
+def count_pdb_element(pdb_file, element):
+	count = 0
+
+	with open(pdb_file, "r") as f:
+		for line in f:
+			if not line.startswith(("ATOM", "HETATM")):
+				continue
+
+			elem = line[76:78].strip()
+
+			if elem == element:
+				count += 1
+
+	return count
+
 # ====
 # Structure & file modification classes
 # ====
@@ -1845,18 +1871,14 @@ def run_hydration_workflow(dry_pdb_file, nproc):
 	os.chdir(hyd_eq_dir)
 
 	base_hyd_pdb = dry_pdb_file
-	polymer_file = read(base_hyd_pdb)
-	cell = polymer_file.cell
-	a, b, c = cell.lengths()
-	num_S = sum(1 for atom in polymer_file if atom.symbol == "S")
+	a, b, c = get_pdb_box_lengths(base_hyd_pdb)
+	num_S = count_pdb_element(base_hyd_pdb, "S")
 
 	for i, lam in enumerate(lam_list):
 		if i > 0:
 			prev_hyd_tag = hyd_system_name(polymer, chain_length, num_chains, lam_list[i-1], mix_chains)
 			base_hyd_pdb = f"{prev_hyd_tag}_hyd-eq_last.pdb"
-			polymer_file = read(base_hyd_pdb)
-			cell = polymer_file.cell
-			a, b, c = cell.lengths()
+			a, b, c = get_pdb_box_lengths(base_hyd_pdb)
 	
 		prev_lam = 0 if i == 0 else lam_list[i - 1]
 		add_lam = lam - prev_lam
@@ -2002,9 +2024,7 @@ def run_conductivity_workflow(nproc, chain_lengths):
 			shutil.copy(os.path.join(cond_pr_dir, fname), lam_cond_pr_dir)
 		
 		os.chdir(lam_cond_pr_dir)
-		hyd_pdb_file = read(hyd_pdb)
-		cell = hyd_pdb_file.cell
-		a, b, c = cell.lengths()
+		a, b, c = get_pdb_box_lengths(hyd_pdb)
 		hyd_clean_pdb = f"{hyd_tag}_hyd-eq_clean.pdb"
 		cleaner = PDBCleaner(hyd_pdb, hyd_clean_pdb, chain_length, num_chains, mix_chains, chain_lengths)
 		cleaner.remove_so3h_hydrogens()
