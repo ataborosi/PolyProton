@@ -1505,7 +1505,7 @@ class Hyd_BulkCreator:
 		self.system_tag = hyd_system_name(polymer, chain_length, num_chains, lam, mix_chains)
 
 	def packmol_generate_box(self):
-		standardize_pdb_numbering(self.pdb_file")
+		standardize_pdb_numbering(self.pdb_file)
 
 		with open("packmol_input.inp", "w") as f:
 			f.write(f"""
@@ -1658,7 +1658,7 @@ class Cond_BulkCreator:
 		self.system_tag = cond_system_name(polymer, chain_length, num_chains, lam, mix_chains)
 		
 	def packmol_generate_box(self):
-		standardize_pdb_numbering(self.pdb_file")
+		standardize_pdb_numbering(self.pdb_file)
 
 		with open("packmol_input.inp", "w") as f:
 			f.write(f"""
