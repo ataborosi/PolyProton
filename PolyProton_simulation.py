@@ -320,6 +320,99 @@ def count_pdb_element(pdb_file, element):
 
 	return count
 
+def standardize_pdb_numbering(pdb_file):
+	PDB_CHAIN_IDS = (
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		"abcdefghijklmnopqrstuvwxyz"
+		"0123456789"
+	)
+
+	tmp_file = f"{pdb_file}.standardize_tmp"
+
+	atom_counter = 0
+	residue_counter = 0
+	last_residue_key = None
+
+	with open(pdb_file, "r") as f_in, open(tmp_file, "w") as f_out:
+
+		for line in f_in:
+
+			# Reset numbering for a new MODEL
+			if line.startswith("MODEL"):
+				atom_counter = 0
+				residue_counter = 0
+				last_residue_key = None
+
+				f_out.write(line)
+				continue
+
+			if line.startswith(("ATOM", "HETATM")):
+
+				# Original information is only used to detect
+				# when a new residue begins.
+				residue_key = (
+					line[21:22],   # original chain ID
+					line[22:26],   # original residue number
+					line[26:27],   # insertion code
+					line[17:20],   # residue name
+				)
+
+				if residue_key != last_residue_key:
+					residue_counter += 1
+					last_residue_key = residue_key
+
+				chain_block = (
+					(residue_counter - 1) // 9999
+				)
+
+				if chain_block >= len(PDB_CHAIN_IDS):
+					raise RuntimeError(
+						f"Too many residues for PDB chain numbering: "
+						f"{residue_counter}"
+					)
+
+				chain_id = PDB_CHAIN_IDS[chain_block]
+
+				residue_number = (
+					(residue_counter - 1) % 9999
+				) + 1
+
+				atom_counter += 1
+
+				atom_serial = (
+					(atom_counter - 1) % 99999
+				) + 1
+
+				line = (
+					line[:6]
+					+ f"{atom_serial:5d}"
+					+ line[11:21]
+					+ chain_id
+					+ f"{residue_number:4d}"
+					+ line[26:]
+				)
+
+			elif line.startswith("TER"):
+				# TER remains the actual molecular-chain boundary.
+				last_residue_key = None
+
+			elif line.startswith(("ENDMDL", "END")):
+				f_out.write(line)
+
+				# Important for concatenated multi-frame PDB files.
+				atom_counter = 0
+				residue_counter = 0
+				last_residue_key = None
+				continue
+
+			f_out.write(line)
+
+	os.replace(tmp_file, pdb_file)
+
+	log_message(
+		f"\tStandardized PDB numbering: {pdb_file}"
+	)
+
 # ====
 # Structure & file modification classes
 # ====
@@ -601,6 +694,8 @@ class PDBCleaner:
 			out.write("TER\nEND\n")
 			if box_line:
 				out.write(box_line)
+
+		standardize_pdb_numbering(self.output_pdb_file)
 
 # ====
 # Momomer & confomer classes
@@ -1062,6 +1157,8 @@ class GAFF2Param:
 			f.write('quit\n')
 		
 		run_command(f'tleap -f {leap_input_filename} > {leap_output_filename}')
+		
+		standardize_pdb_numbering(f"{self.polymer}_n-{chain_length}.pdb")
 	
 	def parameterization(self, selected_conf):
 		read_xyz_1 = read(f'{self.polymer}_{selected_conf}_opt.xyz')
@@ -1262,6 +1359,8 @@ class Dry_BulkCreator:
 					f.write("end structure\n")
 	
 		run_command('packmol < packmol_input.inp')
+		
+		standardize_pdb_numbering(self.output_pdb)
 	
 	def create_bulk_phase(self):
 		self.prepare_rotated_chains()
@@ -1302,6 +1401,7 @@ class Dry_AmberParams:
 		run_command('tleap -f final_leap_input.in > final_leap_input.out')
 		ambpdb_command = f"ambpdb -p {self.prmtop} -c {self.inpcrd} > {amber_pdb}"
 		run_command(ambpdb_command)
+		standardize_pdb_numbering(amber_pdb)
 
 class Dry_MDSimulation():
 	def __init__(self, nproc, output, amber_params: Dry_AmberParams, use_gpu=True):
@@ -1405,6 +1505,8 @@ class Hyd_BulkCreator:
 		self.system_tag = hyd_system_name(polymer, chain_length, num_chains, lam, mix_chains)
 
 	def packmol_generate_box(self):
+		standardize_pdb_numbering(self.pdb_file")
+
 		with open("packmol_input.inp", "w") as f:
 			f.write(f"""
 			tolerance 1.5
@@ -1427,8 +1529,9 @@ class Hyd_BulkCreator:
 			connect no
 			end structure
 			""")
-
 		run_command('packmol < packmol_input.inp')
+
+		standardize_pdb_numbering(f"{self.system_tag}.pdb")
 
 	def create_bulk_phase(self):
 		self.packmol_generate_box()
@@ -1470,6 +1573,7 @@ class Hyd_AmberParams:
 		run_command('tleap -f final_leap_input.in > final_leap_input.out')
 		ambpdb_command = f"ambpdb -p {self.prmtop} -c {self.inpcrd} > {amber_pdb}"
 		run_command(ambpdb_command)
+		standardize_pdb_numbering(amber_pdb)
 
 
 class Hyd_MDSimulation():
@@ -1554,6 +1658,8 @@ class Cond_BulkCreator:
 		self.system_tag = cond_system_name(polymer, chain_length, num_chains, lam, mix_chains)
 		
 	def packmol_generate_box(self):
+		standardize_pdb_numbering(self.pdb_file")
+
 		with open("packmol_input.inp", "w") as f:
 			f.write(f"""
 			tolerance 1.5
@@ -1576,8 +1682,9 @@ class Cond_BulkCreator:
 			connect no
 			end structure
 			""")
-	
 		run_command('packmol < packmol_input.inp')
+
+		standardize_pdb_numbering(f"{self.system_tag}.pdb")
 	
 	def create_bulk_phase(self):
 		self.packmol_generate_box()
@@ -1622,6 +1729,7 @@ class Cond_AmberParams:
 		run_command('tleap -f final_leap_input.in > final_leap_input.out')
 		ambpdb_command = f"ambpdb -p {self.prmtop} -c {self.inpcrd} > {amber_pdb}"
 		run_command(ambpdb_command)
+		standardize_pdb_numbering(amber_pdb)
 
 class Cond_MDSimulation:
 	def __init__(self, nproc, output, amber_params: Cond_AmberParams, use_gpu=True):
@@ -1688,6 +1796,7 @@ class Analysis():
 	def merge_nc_files(self, prmtop_file, ncrst_file, pdb_file, nc_files, prefix, merged_pdb, cpptraj_file):
 		ambpdb_command = f"ambpdb -p {prmtop_file} -c {ncrst_file} > {pdb_file}"
 		run_command(ambpdb_command)
+		standardize_pdb_numbering(pdb_file)
 		
 		with open(cpptraj_file, 'w') as file:
 			for nc_file in nc_files:			
@@ -1699,7 +1808,8 @@ class Analysis():
 		
 		merge_command = f"ls -v {prefix}* | xargs cat > {merged_pdb}"
 		run_command(merge_command)
-		
+		standardize_pdb_numbering(merged_pdb)
+				
 		for file in os.listdir():
 			if file.startswith(prefix):
 				os.remove(file)			
