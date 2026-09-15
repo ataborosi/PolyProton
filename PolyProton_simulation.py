@@ -409,10 +409,6 @@ def standardize_pdb_numbering(pdb_file):
 
 	os.replace(tmp_file, pdb_file)
 
-	log_message(
-		f"\tStandardized PDB numbering: {pdb_file}"
-	)
-
 # ====
 # Structure & file modification classes
 # ====
