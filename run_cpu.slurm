@@ -5,21 +5,5 @@
 
 cd $SLURM_SUBMIT_DIR
 
-#OPENMPI
-export "PATH=$PATH:/opt/openmpi/bin"
-export "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/openmpi/lib"
-
-DIR1=`pwd`
-DIR2=$RANDOM
-UNAME=`whoami`
-
-#copy files into the local /home/Calculations/UNAME directory
-mkdir /home/Calculations/$UNAME/$DIR2
-cd $DIR1
-cp -r * /home/Calculations/$UNAME/$DIR2
-
-#using local Calculations folder
-cd /home/Calculations/$UNAME/$DIR2
-
 export USE_GPU=False
 python3 PolyProton_simulation.py
