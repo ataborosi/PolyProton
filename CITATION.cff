@@ -1,0 +1,67 @@
+cff-version: 1.2.0
+type: software
+title: "PolyProton"
+date-released: "2026-10-02"
+message: >-
+  If you use PolyProton, please cite the software release.
+  The references below describe methodological foundations
+  of the workflow.
+version: "1.0.0"
+license: BSD-3-Clause
+repository-code: "https://github.com/ataborosi/PolyProton"
+
+authors:
+  - family-names: Taborosi
+    given-names: Attila
+    affiliation: "Shinshu University"
+
+abstract: >-
+  An automated molecular simulation workflow for constructing,
+  parameterizing, equilibrating, and analyzing sulfonated
+  polyimide electrolyte systems using Amber molecular dynamics.
+
+keywords:
+  - molecular dynamics
+  - polymer electrolytes
+  - sulfonated polyimides
+  - proton conductivity
+  - automation
+
+references:
+  - type: article
+    title: >-
+      Molecular Dynamics Simulation of Polymer Electrolyte Membrane
+      for Understanding Structure and Proton Conductivity at Various
+      Hydration Levels Using Neural Network Potential
+    authors:
+      - family-names: Taborosi
+        given-names: Attila
+      - family-names: Aoki
+        given-names: Kentaro
+      - family-names: Zettsu
+        given-names: Nobuyuki
+      - family-names: Koyama
+        given-names: Michihisa
+      - family-names: Nagao
+        given-names: Yuki
+    journal: Macromolecules
+    year: 2025
+    doi: "10.1021/acs.macromol.4c02607"
+
+  - type: article
+    title: >-
+      Structure-hydration-transport relationships in alkyl sulfonated
+      polyimides: backbone-controlled ordering and proton-transport
+      descriptors
+    authors:
+      - family-names: Taborosi
+        given-names: Attila
+      - family-names: Aoki
+        given-names: Kentaro
+      - family-names: Nagao
+        given-names: Yuki
+      - family-names: Koyama
+        given-names: Michihisa
+    journal: Polymer
+    year: 2026
+    doi: "10.1016/j.polymer.2026.130575"

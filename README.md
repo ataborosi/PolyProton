@@ -243,5 +243,7 @@ are distributed under their own licenses. Users are responsible for obtaining an
 
 ## Citation
 
-If you use PolyProton in academic work, please cite the associated publication.
-Citation information will be added after publication.
+If you use PolyProton in academic work, please cite the software release.
+Citation metadata are provided in [CITATION.cff](CITATION.cff).
+
+The accompanying PolyProton methodology paper will be added once published.
