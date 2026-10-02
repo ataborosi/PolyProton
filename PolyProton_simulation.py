@@ -5,7 +5,7 @@ import os
 import shutil
 import glob
 import subprocess
-import getpass
+import tempfile
 import random
 import warnings
 
@@ -29,50 +29,61 @@ warnings.simplefilter("ignore")
 # Calculators / Profiles
 # ====
 
+import torch
 from mace.calculators import mace_off
 from contextlib import redirect_stdout, redirect_stderr
-with open(os.devnull, "w") as devnull:
-	with redirect_stdout(devnull), redirect_stderr(devnull):
-		nnp_calc = mace_off(model="small", device="cpu")
 from ase.calculators.orca import ORCA
 from ase.calculators.orca import OrcaProfile
-profile = OrcaProfile(command='/opt/orca/orca')
 
 # ====
 # User settings
 # ====
 
+# Polymer / monomer settings
 polymer = 'a1'
 
-backbone_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
+dianhydride_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
 sidechain_smiles = "OCCCS(O)(=O)=O"
 benzene_smiles = "C1=CC=CC=C1"
 
+# Conformer settings
 conf_num = 2
-conf_selection = "best"			 
-temperature = 300
+#conf_num = 50
+conf_selection = "LE"	 
 conf_far_fraction = 0.5
 conf_prune_rms_thresh = 0.02	
+temperature = 300
 
-chain_length = 15
-num_chains = 30
-mix_chains = True
+# Polymer system settings
+chain_length = 10
+num_chains = 15
+mix_chains = False
 mix_seed = 42
 mix_chain_fraction = 0.20
 pack_z_padding = 15.0
 aligned = True
 
+# Hydration / conductivity
 lam_list = [2, 4, 6, 8, 10, 12]
 cond_lam_list = [12]
 
+# Equilibration protocol
 dry_eq_prot = "6-step" 
 
+# Workflow stages
 run_param = True
 run_dry = True
 run_hyd = True
 run_cond = True
 
+# Computational resources
 use_gpu = True
+use_nproc = 24
+use_mace_device = "cuda"
+
+# External software / scratch paths
+orca_dir = "/opt/orca"
+scratch_dir = None
 
 # ====
 # Paths / Folders
@@ -96,8 +107,93 @@ cond_pr_input_dir = os.path.join(input_dir, "cond_pr")
 # Helper functions
 # ====
 
-def get_nproc(default=4):
-	return int(os.environ.get("SLURM_NTASKS", default))
+def get_scratch_dir(scratch_dir):
+	if scratch_dir is not None:
+		resolved_dir = os.path.abspath(
+			os.path.expanduser(
+				os.path.expandvars(str(scratch_dir))
+			)
+		)
+	elif os.environ.get("SLURM_TMPDIR"):
+		resolved_dir = os.environ["SLURM_TMPDIR"]
+	elif os.environ.get("TMPDIR"):
+		resolved_dir = os.environ["TMPDIR"]
+	else:
+		resolved_dir = tempfile.gettempdir()
+
+	os.makedirs(resolved_dir, exist_ok=True)
+
+	if not os.path.isdir(resolved_dir):
+		raise NotADirectoryError(
+			f"Scratch path is not a directory: {resolved_dir}"
+		)
+
+	if not os.access(resolved_dir, os.W_OK):
+		raise PermissionError(
+			f"Scratch directory is not writable: {resolved_dir}"
+		)
+
+	return resolved_dir
+
+def create_amber_temp_dir(scratch_dir, step_name):
+	return tempfile.mkdtemp(
+		prefix=f"PolyProton_{step_name}_",
+		dir=scratch_dir
+	)
+
+def get_nproc(use_nproc):
+	slurm_nproc = os.environ.get("SLURM_NTASKS")
+
+	if slurm_nproc is not None:
+		nproc = int(slurm_nproc)
+	else:
+		nproc = int(use_nproc)
+
+	if nproc < 1:
+		raise ValueError("Number of CPU processes must be >= 1")
+
+	return nproc
+
+def get_use_gpu(use_gpu):
+	if not os.environ.get("SLURM_JOB_ID"):
+		return use_gpu
+
+	gpu_count = os.environ.get("SLURM_GPUS_ON_NODE")
+	if gpu_count is not None:
+		return int(gpu_count) > 0
+
+	gpu_ids = os.environ.get("SLURM_JOB_GPUS", "").strip()
+	return bool(gpu_ids)
+
+def get_mace_calculator(device, nproc):
+	device = str(device).lower()
+
+	if device not in ["cpu", "cuda"]:
+		raise ValueError(
+			"use_mace_device must be either 'cpu' or 'cuda'"
+		)
+
+	if device == "cpu":
+		torch.set_num_threads(nproc)
+
+	with open(os.devnull, "w") as devnull:
+		with redirect_stdout(devnull), redirect_stderr(devnull):
+			nnp_calc = mace_off(
+				model="small",
+				device=device
+			)
+
+	return nnp_calc
+
+def get_orca_profile(orca_dir):
+	orca_binary = os.path.join(orca_dir, "orca")
+
+	if not os.path.isfile(orca_binary):
+		raise FileNotFoundError(
+			f"ORCA executable not found: {orca_binary}"
+		)
+
+	return OrcaProfile(command=orca_binary)
 	
 def log_message(message):
 	with open(output, 'a') as f:
@@ -128,16 +224,16 @@ def ensure_directories():
 	os.makedirs(hyd_eq_dir, exist_ok=True)
 	os.makedirs(cond_pr_dir, exist_ok=True)
 
-def select_conformer(conf_file, conf_sel="best", far_fraction=0.5):
-	df = pd.read_csv(conf_file, delim_whitespace=True)
-	best_conf = int(df.iloc[0]["conf_i"])
+def select_conformer(conf_file, conf_sel="LE", far_fraction=0.5):
+	df = pd.read_csv(conf_file, sep=r'\s+')
+	LE_conf = int(df.iloc[0]["conf_i"])
 
-	if conf_sel == "best":
-		return best_conf
+	if conf_sel == "LE":
+		return LE_conf
 
-	if conf_sel == "random":
+	if conf_sel == "HE":
 		if len(df) == 1:
-			return best_conf
+			return LE_conf
 
 		others = df.iloc[1:].copy()
 
@@ -150,7 +246,7 @@ def select_conformer(conf_file, conf_sel="best", far_fraction=0.5):
 
 		return int(random.choice(far_pool["conf_i"].tolist()))
 
-	raise ValueError("conf_sel must be either 'best' or 'random'")
+	raise ValueError("conf_sel must be either 'LE' or 'HE'")
 
 def get_generated_conf_indices(polymer):
 	xyz_files = sorted(glob.glob(f"{polymer}_*.xyz"))
@@ -237,8 +333,11 @@ def ordered_chain_lengths_for_packmol(chain_length, num_chains, mix_chains=False
 	return ordered_lengths
 
 def validate_settings():
-	if conf_selection not in ["best", "random"]:
-		raise ValueError("conf_selection must be 'best' or 'random'")
+	if run_hyd and not run_dry:
+		raise ValueError("run_hyd=True requires run_dry=True in the same workflow execution.")
+
+	if conf_selection not in ["LE", "HE"]:
+		raise ValueError("conf_selection must be 'LE' or 'HE'")
 
 	if chain_length < 2:
 		raise ValueError("chain_length must be >= 2")
@@ -252,6 +351,14 @@ def validate_settings():
 	for lam in cond_lam_list:
 		if lam not in lam_list:
 			raise ValueError(f"cond lambda {lam} not found in lam_list")
+
+	if int(use_nproc) < 1:
+		raise ValueError("use_nproc must be >= 1")
+
+	if str(use_mace_device).lower() not in ["cpu", "cuda"]:
+		raise ValueError(
+			"use_mace_device must be either 'cpu' or 'cuda'"
+		)
 
 def write_anchor_indices(polymer, anchor_indices):
 	with open(f"{polymer}_anchors.txt", "w") as f:
@@ -271,8 +378,8 @@ def read_anchor_indices(polymer):
 
 	return indices			  
 
-def log_settings(chain_lengths, system_tag, nproc):
-	log_message(f"Processing polymer: {polymer} with backbone: {backbone_smiles}")
+def log_settings(chain_lengths, system_tag, nproc, resolved_scratch_dir):
+	log_message(f"Processing polymer: {polymer} with dianhydride: {dianhydride_smiles}")
 	log_message(f"\tconf_selection = {conf_selection}")
 	log_message(f"\tconf_num = {conf_num}")
 	log_message(f"\tconf_prune_rms_thresh = {conf_prune_rms_thresh}")
@@ -291,8 +398,12 @@ def log_settings(chain_lengths, system_tag, nproc):
 	log_message(f"\tlam_list = {lam_list}")
 	log_message(f"\tcond_lam_list = {cond_lam_list}")
 	log_message(f"\tsystem_tag = {system_tag}")
+	log_message(f"\tuse_nproc = {use_nproc}")
 	log_message(f"\tnproc = {nproc}")
 	log_message(f"\tuse_gpu = {use_gpu}")
+	log_message(f"\tuse_mace_device = {use_mace_device}")
+	log_message(f"\torca_dir = {orca_dir}")
+	log_message(f"\tscratch_dir = {resolved_scratch_dir}")
 
 def get_pdb_box_lengths(pdb_file):
 	with open(pdb_file, "r") as f:
@@ -698,9 +809,9 @@ class PDBCleaner:
 # ====
 
 class MonomerBuilder:
-	def __init__(self, polymer, backbone_smiles, sidechain_smiles, benzene_smiles, conf_num):
+	def __init__(self, polymer, dianhydride_smiles, sidechain_smiles, benzene_smiles, conf_num):
 		self.polymer = polymer
-		self.backbone_smiles = backbone_smiles
+		self.dianhydride_smiles = dianhydride_smiles
 		self.sidechain_smiles = sidechain_smiles
 		self.benzene_smiles = benzene_smiles
 		self.final_conf = None
@@ -708,15 +819,15 @@ class MonomerBuilder:
 		self.conf_num = conf_num
 		self.chain_anchor_indices = None
 	
-	def create_backbone(self):
-		backbone = Chem.MolFromSmiles(self.backbone_smiles)
-		for atom in backbone.GetAtoms():
+	def create_dianhydride(self):
+		dianhydride = Chem.MolFromSmiles(self.dianhydride_smiles)
+		for atom in dianhydride.GetAtoms():
 			if (atom.GetSymbol() == 'O'):
 				carbon_neighbors = [neighbor.GetIdx() for neighbor in atom.GetNeighbors() if (neighbor.GetSymbol() == 'C')]
 				if len(carbon_neighbors) == 2:
-					if all(len([neighbor.GetIdx() for neighbor in backbone.GetAtomWithIdx(carbon).GetNeighbors() if neighbor.GetSymbol() == 'O']) == 2 for carbon in carbon_neighbors):
+					if all(len([neighbor.GetIdx() for neighbor in dianhydride.GetAtomWithIdx(carbon).GetNeighbors() if neighbor.GetSymbol() == 'O']) == 2 for carbon in carbon_neighbors):
 						atom.SetAtomicNum(7)
-		self.backbone = backbone
+		self.dianhydride = dianhydride
 	
 	def attach_sidechain(self):
 		benzene = Chem.MolFromSmiles(self.benzene_smiles)
@@ -726,7 +837,7 @@ class MonomerBuilder:
 		ed_benside.AddBond(3, 6, Chem.BondType.SINGLE)
 		benside = ed_benside.GetMol()
 		
-		combo = Chem.CombineMols(benside, self.backbone)
+		combo = Chem.CombineMols(benside, self.dianhydride)
 		Nidx = [atom.GetIdx() for atom in combo.GetAtoms() if atom.GetSymbol() == "N"]
 		ed_combo = Chem.EditableMol(combo)
 		ed_combo.AddBond(4, Nidx[0], Chem.BondType.SINGLE)
@@ -885,10 +996,12 @@ class ConformationAnalyzer:
 # ====
 
 class GAFF2Param:
-	def __init__(self, polymer, chain_length, nproc):
+	def __init__(self, polymer, chain_length, nproc, orca_profile, orca_dir):
 		self.polymer = polymer
 		self.chain_length = chain_length
 		self.nproc = nproc
+		self.orca_profile = orca_profile
+		self.orca_dir = orca_dir		
 
 	def remove_atoms(self, mol_in, mol_out):
 		mol = read(mol_in)
@@ -923,7 +1036,7 @@ class GAFF2Param:
 	def orca_calculation(self, mol, charge, mult, file_name):
 		log_message(f"\tSingle point energy calculation on selected conformer")
 		orca_calc = ORCA(
-			profile=profile,
+			profile=self.orca_profile,
 			orcasimpleinput='wb97x-d4 def2-svp def2/j rijcosx tightscf',
 			charge=charge,
 			mult=mult,
@@ -935,8 +1048,9 @@ class GAFF2Param:
 			new_name = f.replace("orca.", f"{file_name}.", 1)
 			if not os.path.exists(new_name):
 				shutil.move(f, new_name)	
-		orca_command = f'/opt/orca/orca_2mkl {file_name} -molden'
-		
+
+		orca_2mkl = os.path.join(self.orca_dir, "orca_2mkl")
+		orca_command = (f'{orca_2mkl} {file_name} -molden')
 		run_command(orca_command)
 
 	def run_multiwfn(self, file_name):
@@ -945,7 +1059,7 @@ class GAFF2Param:
 		multiwfn_input = f'{molden_file}\n7\n18\n10\n2\n1\ny\n0\n0\nq\n'
 		with open("multiwfn_input.txt", "w") as input_file:
 			input_file.write(multiwfn_input)
-		multiwfn_command = f'Multiwfn < multiwfn_input.txt -set /opt/multiwfn/settings.ini'
+		multiwfn_command = f'Multiwfn < multiwfn_input.txt'
 		
 		run_command(multiwfn_command)
 
@@ -970,7 +1084,7 @@ class GAFF2Param:
 			if os.path.exists(f):
 				molden_chg_file = f
 				break
-		molden_df = pd.read_csv(molden_chg_file, delim_whitespace=True, header=None)
+		molden_df = pd.read_csv(molden_chg_file, sep=r'\s+', header=None)
 		atom_df[7] = self.polymer
 		atom_df[8] = molden_df[4].map('{:.4f}'.format)
 		atom_lines_modified = [' '.join(row) + '\n' for row in atom_df.values.astype(str)]
@@ -1400,21 +1514,21 @@ class Dry_AmberParams:
 		standardize_pdb_numbering(amber_pdb)
 
 class Dry_MDSimulation():
-	def __init__(self, nproc, output, amber_params: Dry_AmberParams, use_gpu=True):
+	def __init__(self, nproc, output, amber_params: Dry_AmberParams, use_gpu=True, scratch_dir=None):
 		self.prmtop = amber_params.prmtop
 		self.inpcrd = amber_params.inpcrd
 		self.nproc = nproc
 		self.dir1 = os.getcwd()
-		self.uname = getpass.getuser()
 		self.output = output
 		self.nproc = nproc
 		self.use_gpu = use_gpu
+		self.scratch_dir = scratch_dir
 
 	def run_simulation(self, step_name, input_file, output_file, restart_in, restart_out, reference_file, additional_args=""):
 		with open(self.output, 'a') as f:
 			print(f"\t\tStarted {step_name} step", file=f)
 
-		temp_dir = subprocess.check_output(['mktemp', '-d', f'/home/Calculations/{self.uname}/XXXXXX']).decode().strip()
+		temp_dir = create_amber_temp_dir(self.scratch_dir, step_name)
 		folder_name = f"{step_name}"
 		os.makedirs(folder_name, exist_ok=True)
 		
@@ -1571,24 +1685,23 @@ class Hyd_AmberParams:
 		run_command(ambpdb_command)
 		standardize_pdb_numbering(amber_pdb)
 
-
 class Hyd_MDSimulation():
-	def __init__(self, nproc, output, amber_params: Hyd_AmberParams, use_gpu=True):
+	def __init__(self, nproc, output, amber_params: Hyd_AmberParams, use_gpu=True, scratch_dir=None):
 		self.prmtop = amber_params.prmtop
 		self.inpcrd = amber_params.inpcrd
 		self.lam = amber_params.lam
 		self.nproc = nproc
 		self.dir1 = os.getcwd()
-		self.uname = getpass.getuser()
 		self.output = output
 		self.nproc = nproc
 		self.use_gpu = use_gpu
+		self.scratch_dir = scratch_dir
 		
 	def run_simulation(self, step_name, input_file, output_file, restart_in, restart_out, reference_file, additional_args=""):
 		with open(self.output, "a") as f:
 			print(f"\t\tStarted {step_name} step", file=f)
 			
-		temp_dir = subprocess.check_output(['mktemp', '-d', f'/home/Calculations/{self.uname}/XXXXXX']).decode().strip()
+		temp_dir = create_amber_temp_dir(self.scratch_dir, step_name)
 		folder_name = f"{step_name}"
 		os.makedirs(folder_name, exist_ok=True)
 		
@@ -1728,21 +1841,21 @@ class Cond_AmberParams:
 		standardize_pdb_numbering(amber_pdb)
 
 class Cond_MDSimulation:
-	def __init__(self, nproc, output, amber_params: Cond_AmberParams, use_gpu=True):
+	def __init__(self, nproc, output, amber_params: Cond_AmberParams, use_gpu=True, scratch_dir=None):
 		self.prmtop = amber_params.prmtop
 		self.inpcrd = amber_params.inpcrd
 		self.lam = amber_params.lam
 		self.nproc = nproc
 		self.dir1 = os.getcwd()
-		self.uname = getpass.getuser()
 		self.output = output
 		self.use_gpu = use_gpu
+		self.scratch_dir = scratch_dir
 		
 	def run_simulation(self, step_name, input_file, output_file, restart_in, restart_out, reference_file, additional_args=""):
 		with open(self.output, "a") as f:
 			print(f"\t\tStarted {step_name} step", file=f)
 		
-		temp_dir = subprocess.check_output(['mktemp', '-d', f'/home/Calculations/{self.uname}/XXXXXX']).decode().strip()
+		temp_dir = create_amber_temp_dir(self.scratch_dir, step_name)
 		folder_name = f"{step_name}"
 		os.makedirs(folder_name, exist_ok=True)
 		
@@ -1815,14 +1928,14 @@ class Analysis():
 # ====
 
 def build_monomer_and_conformers():
-	monomer_builder = MonomerBuilder(polymer, backbone_smiles, sidechain_smiles, benzene_smiles, conf_num)
-	monomer_builder.create_backbone()
+	monomer_builder = MonomerBuilder(polymer, dianhydride_smiles, sidechain_smiles, benzene_smiles, conf_num)
+	monomer_builder.create_dianhydride()
 	monomer_builder.attach_sidechain()
 	monomer_builder.create_conformations()
 	log_message("\tMonomer building and conformer creation finished")
 
-def optimize_and_rank_conformers(conf_output_file):
-	conformation_analysis = ConformationAnalysis(polymer, nnp_calc)
+def optimize_and_rank_conformers(conf_output_file, calculator):
+	conformation_analysis = ConformationAnalysis(polymer, calculator)
 	conformation_analysis.optimize_confomer()
 	log_message("\tConformation analysis finished")
 	
@@ -1834,8 +1947,8 @@ def optimize_and_rank_conformers(conf_output_file):
 	log_message(f"\tSelected conformer mode = {conf_selection}, conf_i = {selected_conf}")
 	return selected_conf
 
-def run_parameterization(selected_conf, chain_lengths):
-	param = GAFF2Param(polymer, chain_length, get_nproc())
+def run_parameterization(selected_conf, chain_lengths, nproc, orca_profile):
+	param = GAFF2Param(polymer, chain_length, nproc, orca_profile, orca_dir)
 	param.parameterization(selected_conf)
 
 	if mix_chains:
@@ -1845,7 +1958,7 @@ def run_parameterization(selected_conf, chain_lengths):
 
 	log_message("\tGAFF2 parameters and single polymer chain creation finished")
 
-def run_dry_workflow(chain_lengths, system_tag, nproc):
+def run_dry_workflow(chain_lengths, system_tag, nproc, scratch_dir):
 	os.chdir(init_dir)
 
 	dry_bulk_creator = Dry_BulkCreator(
@@ -1900,7 +2013,7 @@ def run_dry_workflow(chain_lengths, system_tag, nproc):
 		shutil.copy(os.path.join(dry_eq_input_dir, inputs), dry_eq_dir)	   
 
 	log_message("\tDry equilibration MD simulations started")
-	dry_md = Dry_MDSimulation(nproc, output, amber_params=dry_amber, use_gpu=use_gpu)
+	dry_md = Dry_MDSimulation(nproc, output, amber_params=dry_amber, use_gpu=use_gpu, scratch_dir=scratch_dir)
 	dry_md.run_all_steps(dry_eq_prot)
 	log_message("\tDry equilibration MD simulations finished")
 
@@ -1973,7 +2086,7 @@ def prepare_hydration_inputs(dry_pdb_file):
 	]:
 		shutil.copy(os.path.join(hyd_eq_input_dir, inputs), hyd_eq_dir)
 
-def run_hydration_workflow(dry_pdb_file, nproc):
+def run_hydration_workflow(dry_pdb_file, nproc, scratch_dir):
 	os.chdir(hyd_eq_dir)
 
 	base_hyd_pdb = dry_pdb_file
@@ -2054,7 +2167,7 @@ def run_hydration_workflow(dry_pdb_file, nproc):
 		# Run the dry equilibration MD simulations sequence using Amber software (pmemd.MPI & pmemd.cuda)
 		with open(output, 'a') as f:
 			print(f"\tHydration lambda={lam} equilibration MD simulations started", file=f)
-		hyd_md = Hyd_MDSimulation(nproc, output, amber_params=hyd_amber, use_gpu=use_gpu)
+		hyd_md = Hyd_MDSimulation(nproc, output, amber_params=hyd_amber, use_gpu=use_gpu, scratch_dir=scratch_dir)
 		hyd_md.run_all_steps()
 		with open(output, 'a') as f:
 			print(f"\tHydration lambda={lam} equilibration MD simulations finished", file=f)
@@ -2102,7 +2215,7 @@ def prepare_conductivity_inputs():
 	]:
 		shutil.copy(os.path.join(init_dir, params), cond_pr_dir)
 
-def run_conductivity_workflow(nproc, chain_lengths):
+def run_conductivity_workflow(nproc, chain_lengths, scratch_dir):
 	for lam in cond_lam_list:	 
 		lam_cond_pr_dir = os.path.join(cond_pr_dir, f"{lam}_h3o-h2o")
 		lam_cond_init_dir = os.path.join(lam_cond_pr_dir, "init")
@@ -2176,7 +2289,7 @@ def run_conductivity_workflow(nproc, chain_lengths):
 		with open(output, 'a') as f:
 			print(f"\tConductivity lambda={lam} MD simulations started", file=f)
 			
-		cond_md = Cond_MDSimulation(nproc, output, amber_params=cond_amber, use_gpu=use_gpu)
+		cond_md = Cond_MDSimulation(nproc, output, amber_params=cond_amber, use_gpu=use_gpu, scratch_dir=scratch_dir)
 		cond_md.run_all_steps()
 		
 		with open(output, 'a') as f:
@@ -2194,30 +2307,35 @@ def run_workflow():
 
 	os.chdir(init_dir)
 
-	nproc = get_nproc()
+	global use_gpu
+	use_gpu = get_use_gpu(use_gpu)
+	nproc = get_nproc(use_nproc)
+	resolved_scratch_dir = get_scratch_dir(scratch_dir)
+	
 	chain_lengths = generate_chain_lengths(chain_length, num_chains, mix_chains, mix_seed, mix_chain_fraction)
 	system_tag = system_name(polymer, chain_length, num_chains, mix_chains)
 	conf_output_file = f"{polymer}_conf.txt"
 
-	log_settings(chain_lengths, system_tag, nproc)
-
-	build_monomer_and_conformers()
-	selected_conf = optimize_and_rank_conformers(conf_output_file)
+	log_settings(chain_lengths, system_tag, nproc, resolved_scratch_dir)
 
 	if run_param:
-		run_parameterization(selected_conf, chain_lengths)
-
+		nnp_calc = get_mace_calculator(use_mace_device, nproc)
+		orca_profile = get_orca_profile(orca_dir)
+		build_monomer_and_conformers()
+		selected_conf = optimize_and_rank_conformers(conf_output_file, nnp_calc)
+		run_parameterization(selected_conf, chain_lengths, nproc, orca_profile)
+		
 	dry_pdb_file = None
 	if run_dry:
-		dry_pdb_file = run_dry_workflow(chain_lengths, system_tag, nproc)
+		dry_pdb_file = run_dry_workflow(chain_lengths, system_tag, nproc, resolved_scratch_dir)
 
 	if run_hyd and dry_pdb_file is not None:
 		prepare_hydration_inputs(dry_pdb_file)
-		run_hydration_workflow(dry_pdb_file, nproc)
+		run_hydration_workflow(dry_pdb_file, nproc, resolved_scratch_dir)
 
 	if run_cond:
 		prepare_conductivity_inputs()
-		run_conductivity_workflow(nproc, chain_lengths)
+		run_conductivity_workflow(nproc, chain_lengths, resolved_scratch_dir)
 
 if __name__ == "__main__":
 	run_workflow()

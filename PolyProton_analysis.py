@@ -22,15 +22,18 @@ warnings.simplefilter("ignore")
 # User settings
 # ====
 
+# Polymer system settings
 polymer = "a1"
 
-chain_length = 15
-num_chains = 30
+chain_length = 10
+num_chains = 15
 mix_chains = False
 
+# Hydration / conductivity
 hyd_analysis_lam_list = [12]
 cond_analysis_lam_list = [12]
 
+# Workflow stages
 run_dry_analysis = True
 run_hyd_analysis = True
 run_cond_analysis = True
@@ -38,6 +41,35 @@ run_cond_analysis = True
 # Dry equilibration protocol
 # "6-step" or "12-step"
 dry_eq_prot = "6-step"
+
+# ====
+# Paths / Folders
+# ====
+
+base_dir = os.getcwd()
+output = os.path.join(base_dir, "PolyProton_analysis_process.txt")
+
+# expected folder structure:
+# base_dir/
+#	simulation/
+#	  init/
+#	  dry_eq/
+#	  hyd_eq/
+#	  cond_pr/
+#	analysis/
+#	  dry/
+#	  hyd/
+#	  cond/		   
+
+simulation_dir = os.path.join(base_dir, "simulation")
+dry_eq_dir = os.path.join(simulation_dir, "dry_eq")
+hyd_eq_dir = os.path.join(simulation_dir, "hyd_eq")
+cond_pr_dir = os.path.join(simulation_dir, "cond_pr")
+
+analysis_dir = os.path.join(base_dir, "analysis")
+dry_analysis_dir = os.path.join(analysis_dir, "dry")
+hyd_analysis_dir = os.path.join(analysis_dir, "hyd")
+cond_analysis_dir = os.path.join(analysis_dir, "cond")
 
 # Dry production trajectory is selected automatically from dry_eq_prot
 def dry_production_files(protocol):
@@ -92,7 +124,7 @@ cond_restart_file = "cond_pr-nvt.ncrst"
 cond_frame_start = 1
 cond_frame_stop = 10000
 cond_frame_stride = 10
-cond_time_between_nc_frames_ps = 100.0
+cond_time_between_nc_frames_ps = 10.0
 
 # MSD fitting window
 msd_fit_start_ps = 10000.0	 # 10 ns
@@ -125,36 +157,6 @@ elementary_charge_C = 1.602176634e-19
 boltzmann_J_K = 1.380649e-23
 angstrom2_per_ps_to_m2_per_s = 1.0e-8
 angstrom3_to_m3 = 1.0e-30
-
-# ====
-# Paths / Folders
-# ====
-
-base_dir = os.getcwd()
-
-# expected folder structure:
-# base_dir/
-#	simulation/
-#	  init/
-#	  dry_eq/
-#	  hyd_eq/
-#	  cond_pr/
-#	analysis/
-#	  dry/
-#	  hyd/
-#	  cond/		   
-
-simulation_dir = os.path.join(base_dir, "simulation")
-dry_eq_dir = os.path.join(simulation_dir, "dry_eq")
-hyd_eq_dir = os.path.join(simulation_dir, "hyd_eq")
-cond_pr_dir = os.path.join(simulation_dir, "cond_pr")
-
-analysis_dir = os.path.join(base_dir, "analysis")
-dry_analysis_dir = os.path.join(analysis_dir, "dry")
-hyd_analysis_dir = os.path.join(analysis_dir, "hyd")
-cond_analysis_dir = os.path.join(analysis_dir, "cond")
-
-output = os.path.join(base_dir, "PolyProton_analysis_process.txt")
 
 # ====
 # Helper functions

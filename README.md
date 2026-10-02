@@ -3,17 +3,17 @@
 </p>
 
 # PolyProton
-This repository contains as automated workflow for constructing, equlibrating, and analyzing
+This repository contains an automated workflow for constructing, equilibrating, and analyzing
 sulfonated polyimide (SPI) electrolyte systems for proton conductivity studies. The workflow
 is designed around Amber molecular dynamics simulations and post processing of dry, hydrated
-and hydronium containing conductivity systems. The workflows is currently tailored to sulfonated
+and hydronium containing conductivity systems. The workflow is currently tailored to sulfonated
 polyimide, but the code structure can be adapted to related polymer electrolyte systems by 
-chaning the monomer SMILES definitions, residue templates, input files, and analysis settings.
+changing the monomer SMILES definitions, residue templates, input files, and analysis settings.
 
 ## Workflow overview
 The complete workflow has two main codes:
-"PolyProton_simulation.py"
-"PolyProton_analysis.py"
+- "PolyProton_simulation.py"
+- "PolyProton_analysis.py"
 
 The simulation workflow is organized into four stages:
 
@@ -22,7 +22,7 @@ The simulation workflow is organized into four stages:
 	- Generates conformers using RDKit
 	- Optimizes and ranks conformers based on energy using MACE (mace-off)
 	- Selects either the lowest or a higher energy conformer
-	- Calculate RESP charges of selected conformer using ORCA (wb97x-d4/def2-svp)
+	- Calculates RESP charges of selected conformer using ORCA (wb97x-d4/def2-svp)
 	- Builds polymer chains with fixed or mixed chain lengths
 	- Creates Amber residue templates and force field files
 
@@ -48,12 +48,12 @@ The simulation workflow requires the following
 - Amber / AmberTools >= 24
 - ORCA >= 5.0.3
 - Multiwfn >= 3.8
-- OpenBabel = 3.0.0!
+- OpenBabel >= 3.2.1
 - Packmol >= 20.15.1
 2. Python packages (python >= 3.8)
 - ase
 - rdkit
-- mace 
+- MACE (`mace-torch`)
 - numpy
 - pandas
 - scipy
@@ -72,53 +72,68 @@ Most user controlled simulation settings are defined near the top of "PolyProton
 The simulation workflow is intended to be run from the project root directory.
 Simulation files are written under the `simulation/` folder, while analysis results are written
 separately under the `analysis/` folder.
+For v1.0.0, start each new calculation in a clean working directory containing the workflow scripts and the complete `input_files/` folder.
+Use working and scratch paths without spaces. Automatic restart/resume support is not provided yet.
 
 Example:
 ```
-polymer = "a1"
+# Polymer / monomer settings
+polymer = 'a1'
 
-backbone_smiles = "C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O"
+dianhydride_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
 sidechain_smiles = "OCCCS(O)(=O)=O"
 benzene_smiles = "C1=CC=CC=C1"
 
+# Conformer settings
 conf_num = 50
-conf_selection = "best"
-temperature = 300
+conf_selection = "LE"	 
 conf_far_fraction = 0.5
-conf_prune_rms_thresh = 0.02
+conf_prune_rms_thresh = 0.02	
+temperature = 300
 
-chain_length = 15
-num_chains = 30
-mix_chains = True
+# Polymer system settings
+chain_length = 10
+num_chains = 15
+mix_chains = False
 mix_seed = 42
 mix_chain_fraction = 0.20
 pack_z_padding = 15.0
 aligned = True
 
+# Hydration / conductivity
 lam_list = [2, 4, 6, 8, 10, 12]
 cond_lam_list = [12]
 
-dry_eq_prot = "6-step"
+# Equilibration protocol
+dry_eq_prot = "6-step" 
 
+# Workflow stages
 run_param = True
 run_dry = True
 run_hyd = True
 run_cond = True
 
+# Computational resources
 use_gpu = True
+use_nproc = 24
+use_mace_device = "cuda"
+
+# External software / scratch paths
+orca_dir = "/opt/orca"
+scratch_dir = None
 ```
 
 Important options:
 | Setting | Meaning |
 |---|---|
 | `polymer` | Polymer label, such as `a1`, `a6`, or `a8`. This label is used in generated file names. |
-| `backbone_smiles` | SMILES string of the dianhydride-backbone unit. |
+| `dianhydride_smiles` | SMILES string of the dianhydride-backbone unit. |
 | `sidechain_smiles` | SMILES string of the sulfonated side chain. |
 | `benzene_smiles` | SMILES string of the benzene-backbone unit. |
 | `conf_num` | Target number of conformers to generate. The actual number may be lower after RDKit pruning. |
-| `conf_selection` | Selects the conformer used for parameterization. Use `"best"` for the lowest-energy conformer or `"random"` for a randomly selected higher-energy/diverse conformer.|
-| `temperature` | Temperature used for Boltzmann weighting of conformers. |
-| `conf_far_fraction` | Fraction of high-energy/diverse conformers used as the random selection pool when `conf_selection = "random"`. |
+| `conf_selection` | Selects the conformer used for parameterization. `"LE"` selects the lowest-energy conformer. `"HE"` randomly selects a conformer from the highest-energy fraction of the remaining conformers, as defined by `conf_far_fraction`. |
+| `temperature` | Temperature used when calculating the reported Boltzmann populations of the optimized conformers. It does not change the `"LE"`/`"HE"` conformer-selection rule. |
+| `conf_far_fraction` | Fraction of the non-lowest-energy conformers forming the high-energy selection pool when `conf_selection = "HE"`. For example, `0.5` uses the highest-energy 50% of the remaining conformers. |
 | `conf_prune_rms_thresh` | RDKit conformer pruning threshold. Smaller values retain more similar conformers; `-1.0` disables pruning. |
 | `chain_length` | Number of repeat units in the base polymer chain. This value is also used in generated file names. |
 | `num_chains` | Number of chains packed into the bulk simulation cell. This value is also used in generated file names. |
@@ -127,24 +142,31 @@ Important options:
 | `mix_chain_fraction` | Maximum fractional deviation from chain_length used for mixed-chain systems. For example, 0.20 gives chain lengths within approximately ±20% of the base chain length. |
 | `pack_z_padding` | Extra z-direction padding, in Angstrom, used during initial Packmol dry-bulk construction. Larger values give more space along the chain/alignment direction during packing. |
 | `aligned` | If `True`, uses aligned/compact initial packing. If `False`, uses less-aligned initial orientations. |
-| `lam_list` | Hydration levels prepared and equilibrated during the hydration workflow. Hydration level defined by λ, thus the number of water molecules equivalent to sulfonic acid group.  |
+| `lam_list` | Hydration levels (λ) prepared sequentially during the hydration workflow. Here, λ represents the number of water molecules per sulfonic acid group. |
 | `cond_lam_list` | Hydration levels selected for conductivity simulations. These must be included in `lam_list`. |
 | `dry_eq_prot` | Selects the 6-step or 12-step dry equilibration protocol. |
 | `run_param` | Enables or disables monomer parameterization and polymer-chain generation. |
 | `run_dry` | Enables or disables dry polymer packing and dry equilibration. |
 | `run_hyd` | Enables or disables hydrated polymer equilibration. |
 | `run_cond`  | Enables or disables hydronium-containing conductivity simulations. |
-| `use_gpu` | Controls Amber MD execution mode. If `True`, supported MD steps use `pmemd.cuda`. If `False`, all Amber MD steps use `pmemd.MPI`. |
+| `use_gpu` | Controls Amber MD execution mode. If `True`, supported MD steps use `pmemd.cuda`. If `False`, all Amber MD steps use `pmemd.MPI`. When running under SLURM, `GRES` overrides this value automatically. |
+| `use_nproc` | Number of CPU processes used for MACE-OFF conformer geometry optimization `device = cpu`, parallel ORCA single-point calculations and Amber `pmemd.MPI` simulations. When running under SLURM, `SLURM_NTASKS` overrides this value automatically. |
+| `use_mace_device` | Device used for MACE-OFF conformer geometry optimization. Use `"cpu"` for CPU execution or `"cuda"` for GPU execution. |
+| `orca_dir` | Directory containing the ORCA executables, for example `"/opt/orca"`. The workflow expects both `orca` and `orca_2mkl` to be available in this directory. |
+| `scratch_dir` | Base directory used for temporary Amber calculation files. Set this to a writable local or scratch filesystem appropriate for the computing environment. |
 
 GPU/CPU execution
 ```
 use_gpu = True
 ```
-With this setting, supported Amber MD steps are run with `pmemd.cuda`. Some steps, such as MIN and NPT, may still be run with `pmemd.MPI`.
+When enabled, PolyProton uses a hybrid CPU/GPU execution scheme.
+Dry-stage minimization and NPT steps are run with `pmemd.MPI`, while dry NVT steps are run with `pmemd.cuda`.
+For hydrated and conductivity workflows, minimization is run with `pmemd.MPI`, while subsequent MD steps are run with `pmemd.cuda`.
 ```
 use_gpu = False
 ```
-To run the workflow only in CPU/MPI mode with `pmemd.MPI`.
+When disabled, all Amber minimization and MD steps are run with `pmemd.MPI`.
+The number of MPI processes is determined by `SLURM_NTASKS`, when available, or otherwise by `use_nproc`.
 
 ## Main analysis settings
 The analysis workflow is controlled near the top of "PolyProton_analysis.py".
@@ -164,6 +186,8 @@ cond_analysis_lam_list = [12]
 run_dry_analysis = True
 run_hyd_analysis = True
 run_cond_analysis = True
+
+dry_eq_prot = "6-step"
 ```
 
 Therefore, when analyzing a simulation, make sure that `polymer`, `chain_length`, `num_chains`, and `mix_chains` in `PolyProton_analysis.py`
@@ -184,12 +208,27 @@ Important options:
 | `dry_eq_prot` | Must match the dry equilibration protocol used in the simulation. It determines which dry production trajectory is analyzed. |
 
 
+## Workflow stage dependencies
+
+The workflow stages are sequential. Hydrated equilibration requires the dry equilibration stage to be run in the same workflow execution:
+
+`parameterization → dry equilibration → hydrated equilibration → conductivity`
+
+When `run_hyd = True`, `run_dry` must also be enabled so that the dry equilibrated structure is passed to the hydration workflow.
+
+Conductivity calculations require the corresponding hydrated system and parameterization files to already be available.
+
 ## Notes and limitations
 
+Workflow limitations
 - The workflow assumes that required input templates, water/hydronium PDB files, Amber input files, and force-field files are present in `input_files/`.
-- The current conductivity calculation is based on hydronium vehicle diffusion and Nernst-Einstein conductivity.
 - The conductivity simulation is set to 100 ns, which cannot be changed right now. 
 - Fitting window for MSD is set to 10-100 ns by default. This should be checked for each system to ensure that the selected time range is approximately linear.
+
+Methodology limitations
+- The current conductivity calculation is based on hydronium vehicle diffusion and Nernst-Einstein conductivity.
+
+Notes
 - The water-cluster analysis uses an O-O cutoff of 3.5 Angstrom. This cutoff should be kept consistent when comparing systems.
 - The hydronium-sulfonate residence analysis uses a 4.0 Angstrom cutoff. This cutoff is a structural definition of bound/contacting hydronium and may need sensitivity testing.
 - If `mix_chains = True`, the reported system name keeps the base chain length but the actual chain-length distribution is written to the workflow log.
