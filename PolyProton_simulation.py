@@ -40,15 +40,11 @@ from ase.calculators.orca import OrcaProfile
 # ====
 
 # Polymer / monomer settings
-polymer = 'a1'
-
-dianhydride_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
-sidechain_smiles = "OCCCS(O)(=O)=O"
-benzene_smiles = "C1=CC=CC=C1"
+polymer = 'spi'
+polymer_psmiles = ("[*:1]C=6C(=CC(N1C(C=2C=CC=4C(N(C(C3=CC=C(C1=O)C=2C3=4)=O)C=5C=C(C([*:2])=CC=5)S(O)(=O)=O)=O)=O)=CC=6)S(O)(=O)=O")
 
 # Conformer settings
-conf_num = 2
-#conf_num = 50
+conf_num = 50
 conf_selection = "LE"	 
 conf_far_fraction = 0.5
 conf_prune_rms_thresh = 0.02	
@@ -78,7 +74,7 @@ run_cond = True
 
 # Computational resources
 use_gpu = True
-use_nproc = 24
+use_nproc = 16
 use_mace_device = "cuda"
 
 # External software / scratch paths
@@ -360,6 +356,15 @@ def validate_settings():
 			"use_mace_device must be either 'cpu' or 'cuda'"
 		)
 
+	if not isinstance(polymer_psmiles, str) or not polymer_psmiles.strip():
+		raise ValueError("polymer_psmiles must be a non-empty string")
+	
+	if not isinstance(polymer, str):
+		raise ValueError("polymer must be a string")
+	
+	if len(polymer) != 3 or not polymer.isalnum():
+		raise ValueError("polymer must contain exactly 3 characters, because used for PDB resideu name")
+	
 def write_anchor_indices(polymer, anchor_indices):
 	with open(f"{polymer}_anchors.txt", "w") as f:
 		for idx in anchor_indices:
@@ -379,7 +384,10 @@ def read_anchor_indices(polymer):
 	return indices			  
 
 def log_settings(chain_lengths, system_tag, nproc, resolved_scratch_dir):
-	log_message(f"Processing polymer: {polymer} with dianhydride: {dianhydride_smiles}")
+	log_message(f"Processing polymer: {polymer} with polymer_psmiles: {polymer_psmiles}")
+	log_message(f"\tnum_sulfonic_acid_groups = {num_sulfonic_acid_groups}")
+	log_message(f"\tprotonated_charge = {protonated_charge}")
+	log_message(f"\tdeprotonated_charge = {deprotonated_charge}")
 	log_message(f"\tconf_selection = {conf_selection}")
 	log_message(f"\tconf_num = {conf_num}")
 	log_message(f"\tconf_prune_rms_thresh = {conf_prune_rms_thresh}")
@@ -519,6 +527,18 @@ def standardize_pdb_numbering(pdb_file):
 			f_out.write(line)
 
 	os.replace(tmp_file, pdb_file)
+
+def get_psmiles_chemistry(polymer_psmiles):
+	mol = Chem.MolFromSmiles(polymer_psmiles)
+	
+	so3h_pattern = Chem.MolFromSmarts("[SX4](=[OX1])(=[OX1])[OX2H1]")
+	matches = mol.GetSubstructMatches(so3h_pattern)
+	sulfur_indices = {match[0] for match in matches}
+	num_sulfonic_acid_groups = len(sulfur_indices)
+	protonated_charge = int(Chem.GetFromalCharge(mol))
+	deprotonated_charge = (protonated_charge - num_sulfonic_acid_groups)
+	
+	return (num_sulfonic_acid_groups, protonated_charge, deprotonated_charge)
 
 # ====
 # Structure & file modification classes
@@ -809,96 +829,62 @@ class PDBCleaner:
 # ====
 
 class MonomerBuilder:
-	def __init__(self, polymer, dianhydride_smiles, sidechain_smiles, benzene_smiles, conf_num):
+	def __init__(self, polymer, polymer_psmiles, conf_num):
 		self.polymer = polymer
-		self.dianhydride_smiles = dianhydride_smiles
-		self.sidechain_smiles = sidechain_smiles
-		self.benzene_smiles = benzene_smiles
+		self.polymer_psmiles = polymer_psmiles
 		self.final_conf = None
 		self.cids = []
 		self.conf_num = conf_num
 		self.chain_anchor_indices = None
-	
-	def create_dianhydride(self):
-		dianhydride = Chem.MolFromSmiles(self.dianhydride_smiles)
-		for atom in dianhydride.GetAtoms():
-			if (atom.GetSymbol() == 'O'):
-				carbon_neighbors = [neighbor.GetIdx() for neighbor in atom.GetNeighbors() if (neighbor.GetSymbol() == 'C')]
-				if len(carbon_neighbors) == 2:
-					if all(len([neighbor.GetIdx() for neighbor in dianhydride.GetAtomWithIdx(carbon).GetNeighbors() if neighbor.GetSymbol() == 'O']) == 2 for carbon in carbon_neighbors):
-						atom.SetAtomicNum(7)
-		self.dianhydride = dianhydride
-	
-	def attach_sidechain(self):
-		benzene = Chem.MolFromSmiles(self.benzene_smiles)
-		sidechain = Chem.MolFromSmiles(self.sidechain_smiles)
-		benside = Chem.CombineMols(benzene, sidechain)
-		ed_benside = Chem.EditableMol(benside)
-		ed_benside.AddBond(3, 6, Chem.BondType.SINGLE)
-		benside = ed_benside.GetMol()
-		
-		combo = Chem.CombineMols(benside, self.dianhydride)
-		Nidx = [atom.GetIdx() for atom in combo.GetAtoms() if atom.GetSymbol() == "N"]
-		ed_combo = Chem.EditableMol(combo)
-		ed_combo.AddBond(4, Nidx[0], Chem.BondType.SINGLE)
-		combo = ed_combo.GetMol()
-		
-		final = Chem.CombineMols(benside, combo)
-		Nidx = [atom.GetIdx() for atom in final.GetAtoms() if atom.GetSymbol() == "N"]
-		ed_final = Chem.EditableMol(final)
-		ed_final.AddBond(4, Nidx[1], Chem.BondType.SINGLE)
-		final = ed_final.GetMol()
-		
-		Chem.SanitizeMol(final)
-		self.final_conf = Chem.AddHs(final)
-	
-		self.chain_anchor_indices = self.find_chain_anchor_indices()
-		write_anchor_indices(self.polymer, self.chain_anchor_indices)	 
 
-	def find_chain_anchor_indices(self):
-		mol = self.final_conf
-		rings = [list(r) for r in mol.GetRingInfo().AtomRings()]
-		anchors = []
-	
-		for ring in rings:
-			if len(ring) != 6:
+	def create_monomer_unit(self):
+		mol = Chem.MolFromSmiles(self.polymer_psmiles)
+		if mol is None:
+			raise ValueError(f"Could not parse polymer_psmiles: {self.polymer_psmiles}")
+		
+		star_atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() == 0]
+		if len(star_atoms) != 2:
+			raise ValueError("polymer_psmiles must contain exactly" 
+							"two polymerization endpoints [*]")
+		
+		map_numbers = [atom.GetAtomMapNum() for atom in star_atoms]
+		if set(map_numbers) == {1, 2}:
+			star_atoms = sorted(star_atoms, key=lambda atom: atom.GetAtomMapNum())
+		elif all(map_num == 0 for map_num in map_numbers):
+			star_atoms = sorted(star_atoms, key=lambda atom: atom.GetIdx())
+		
+		anchor_property = "_PolyProtonAnchorOrder"
+		for anchor_order, star_atom in enumerate(star_atoms, start=1):
+			neighbors = list(star_atom.GetNeighbors())
+			anchor_atom = neighbors[0]
+			anchor_atom.SetIntProp(anchor_property, anchor_order)
+			
+		rw_mol = Chem.RWMol(mol)
+		star_indices = sorted([atom.GetIdx() for atom in star_atoms], reverse=True)
+		for star_idx in star_indices:
+			rw_mol.RemoveAtom(star_idx)
+		mol = rw_mol.GetMol()
+		Chem.SanitizeMol(mol)
+		
+		anchor_indices = [None, None]
+		for atom in mol.GetAtoms():
+			if not atom.HasProp(anchor_property):
 				continue
+			anchor_order = atom.GetIntProp(anchor_property)
+			anchor_indices[anchor_order - 1] = atom.GetIdx()
+			atom.ClearProp(anchor_property)
+		
+		mol = Chem.AddHs(mol)
+		
+		for anchor_idx in anchor_indices:
+			anchor_atom = mol.GetAtomWithIdx(anchor_idx)
+			h_neighbors = [nbr for nbr in anchor_atom.GetNeighbors() if nbr.GetAtomicNum() == 1]
 	
-			ring_set = set(ring)
-	
-			if not all(
-				mol.GetAtomWithIdx(i).GetSymbol() == "C" and mol.GetAtomWithIdx(i).GetIsAromatic()
-				for i in ring
-			):
-				continue
-	
-			n_connected_idx = None
-	
-			for idx in ring:
-				atom = mol.GetAtomWithIdx(idx)
-				for nbr in atom.GetNeighbors():
-					nbr_idx = nbr.GetIdx()
-					if nbr_idx in ring_set:
-						continue
-					if nbr.GetSymbol() == "N":
-						n_connected_idx = idx
-						break
-				if n_connected_idx is not None:
-					break
-	
-			if n_connected_idx is None:
-				continue
-	
-			pos = ring.index(n_connected_idx)
-			para_idx = ring[(pos + 3) % 6]
-			anchors.append(para_idx)
-	
-		anchors = sorted(set(anchors))
-	
-		if len(anchors) != 2:
-			raise RuntimeError(f"Could not identify exactly two para anchor carbons. Found: {anchors}")
-	
-		return anchors
+		self.final_conf = mol
+		self.chain_anchor_indices = anchor_indices
+		
+		write_anchor_indices(self.polymer, self.chain_anchor_indices)
+		log_message(f"\tPolymer anchor indices = {self.chain_anchor_indices}")
 	
 	def create_conformations(self):
 		params = Chem.rdDistGeom.srETKDGv3()
@@ -996,12 +982,15 @@ class ConformationAnalyzer:
 # ====
 
 class GAFF2Param:
-	def __init__(self, polymer, chain_length, nproc, orca_profile, orca_dir):
+	def __init__(self, polymer, chain_length, nproc, orca_profile, orca_dir, protonated_charge, deprotonated_charge, num_sulfonic_acid_groups):
 		self.polymer = polymer
 		self.chain_length = chain_length
 		self.nproc = nproc
 		self.orca_profile = orca_profile
-		self.orca_dir = orca_dir		
+		self.orca_dir = orca_dir
+		self.protonated_charge = protonated_charge
+		self.deprotonated_charge = deprotonated_charge
+		self.num_sulfonic_acid_groups = num_sulfonic_acid_groups
 
 	def remove_atoms(self, mol_in, mol_out):
 		mol = read(mol_in)
@@ -1028,7 +1017,19 @@ class GAFF2Param:
 				if mol.get_distance(h_idx, o_idx, mic=True) < 1.2:
 					oh_h_indices.append(h_idx)
 	
-		for i in sorted(set(oh_h_indices), reverse=True):
+		oh_h_indices = sorted(
+			set(oh_h_indices)
+		)
+
+		if len(oh_h_indices) != self.num_sulfonic_acid_groups:
+			raise RuntimeError(
+				f"Expected to remove "
+				f"{self.num_sulfonic_acid_groups} "
+				f"sulfonic-acid hydrogens, but found "
+				f"{len(oh_h_indices)}."
+			)
+
+		for i in reversed(oh_h_indices):
 			del mol[i]
 	
 		write(mol_out, mol)
@@ -1160,8 +1161,6 @@ class GAFF2Param:
 
 			anchor_data.append((atom_id, atom_name, h_neighbors[0]))
 
-		anchor_data.sort(key=lambda x: x[0])
-
 		head_atom_name = anchor_data[0][1]
 		head_h_name = anchor_data[0][2]
 		tail_atom_name = anchor_data[1][1]
@@ -1169,7 +1168,7 @@ class GAFF2Param:
 
 		return head_atom_name, head_h_name, tail_atom_name, tail_h_name
 
-	def write_connectivity_cards(self, mol2_file, so3=False):
+	def write_connectivity_cards(self, mol2_file, residue_charge, so3=False):
 		head_atom_name, head_h_name, tail_atom_name, tail_h_name = self.get_anchor_atom_names_and_hydrogens(mol2_file)
 
 		if so3:
@@ -1185,7 +1184,7 @@ class GAFF2Param:
 			f.write(f"TAIL_NAME {tail_atom_name}\n")
 			f.write(f"OMIT_NAME {tail_h_name}\n")
 			f.write("POST_TAIL_TYPE c3\n")
-			f.write("CHARGE 0.0\n")
+			f.write(f"CHARGE {float(residue_charge):.1f}\n")
 
 		with open(main_file, "w") as f:
 			f.write(f"HEAD_NAME {head_atom_name}\n")
@@ -1194,13 +1193,13 @@ class GAFF2Param:
 			f.write(f"OMIT_NAME {tail_h_name}\n")
 			f.write("PRE_HEAD_TYPE c3\n")
 			f.write("POST_TAIL_TYPE c3\n")
-			f.write("CHARGE 0.0\n")
+			f.write(f"CHARGE {float(residue_charge):.1f}\n")
 
 		with open(tail_file, "w") as f:
 			f.write(f"HEAD_NAME {head_atom_name}\n")
 			f.write(f"OMIT_NAME {head_h_name}\n")
 			f.write("PRE_HEAD_TYPE c3\n")
-			f.write("CHARGE 0.0\n")
+			f.write(f"CHARGE {float(residue_charge):.1f}\n")
 
 	def run_antechamber_v1(self):
 		antechamber_command_1 = f'antechamber -i {self.polymer}_mod.mol2 -fi mol2 -o {self.polymer}_gaff2.mol2 -fo mol2 -at gaff2'
@@ -1212,7 +1211,7 @@ class GAFF2Param:
 		antechamber_command_3 = f'parmchk2 -i {self.polymer}_gaff2.mol2 -f mol2 -o {self.polymer}_gaff2.frcmod -s 2'
 		run_command(antechamber_command_3)
 
-		self.write_connectivity_cards(f"{self.polymer}_gaff2.mol2", so3=False)
+		self.write_connectivity_cards(f"{self.polymer}_gaff2.mol2", residue_charge=self.protonated_charge, so3=False)
 
 		prepgen_command_1 = f'prepgen -i {self.polymer}.ac -o {self.polymer}_m.prepi -f prepi -m main.card -rn {self.polymer}'
 		prepgen_command_2 = f'prepgen -i {self.polymer}.ac -o h.prepi -f prepi -m head.card -rn H'
@@ -1232,7 +1231,7 @@ class GAFF2Param:
 		antechamber_command_3 = f'parmchk2 -i {self.polymer}_so3_gaff2.mol2 -f mol2 -o {self.polymer}_so3_gaff2.frcmod -s 2'
 		run_command(antechamber_command_3)
 
-		self.write_connectivity_cards(f"{self.polymer}_so3_gaff2.mol2", so3=True)
+		self.write_connectivity_cards(f"{self.polymer}_so3_gaff2.mol2", residue_charge=self.deprotonated_charge, so3=True)
 
 		prepgen_command_1 = f'prepgen -i {self.polymer}_so3.ac -o {self.polymer}_m_so3.prepi -f prepi -m main_so3.card -rn {self.polymer}'
 		prepgen_command_2 = f'prepgen -i {self.polymer}_so3.ac -o h_so3.prepi -f prepi -m head_so3.card -rn H'
@@ -1275,7 +1274,7 @@ class GAFF2Param:
 		xyz_file_1 = f'{self.polymer}_{selected_conf}_opt.xyz'
 		file_name_1 = f"{self.polymer}"
 		mod_file_name_1 = f"{self.polymer}_mod"
-		charge_1 = 0
+		charge_1 = self.protonated_charge
 		mult_1 = 1
 		self.orca_calculation(read_xyz_1, charge_1, mult_1, file_name_1)
 		self.run_multiwfn(file_name_1)
@@ -1284,7 +1283,7 @@ class GAFF2Param:
 		self.run_antechamber_v1()
 		self.create_polymer_chain(self.chain_length)
 		xyz_file_2 = f'{self.polymer}_{selected_conf}_opt_so3.xyz'
-		charge_2 = -2
+		charge_2 = self.deprotonated_charge
 		mult_2 = 1
 		self.remove_atoms(xyz_file_1, xyz_file_2)
 		read_xyz_2 = read(f'{self.polymer}_{selected_conf}_opt_so3.xyz')
@@ -1928,9 +1927,8 @@ class Analysis():
 # ====
 
 def build_monomer_and_conformers():
-	monomer_builder = MonomerBuilder(polymer, dianhydride_smiles, sidechain_smiles, benzene_smiles, conf_num)
-	monomer_builder.create_dianhydride()
-	monomer_builder.attach_sidechain()
+	monomer_builder = MonomerBuilder(polymer, polymer_psmiles, conf_num)
+	monomer_builder.create_monomer_unit()
 	monomer_builder.create_conformations()
 	log_message("\tMonomer building and conformer creation finished")
 
@@ -1947,8 +1945,8 @@ def optimize_and_rank_conformers(conf_output_file, calculator):
 	log_message(f"\tSelected conformer mode = {conf_selection}, conf_i = {selected_conf}")
 	return selected_conf
 
-def run_parameterization(selected_conf, chain_lengths, nproc, orca_profile):
-	param = GAFF2Param(polymer, chain_length, nproc, orca_profile, orca_dir)
+def run_parameterization(selected_conf, chain_lengths, nproc, orca_profile, protonated_charge, deprotonated_charge, num_sulfonic_acid_groups):
+	param = GAFF2Param(polymer, chain_length, nproc, orca_profile, orca_dir, protonated_charge, deprotonated_charge, num_sulfonic_acid_groups)
 	param.parameterization(selected_conf)
 
 	if mix_chains:
@@ -2086,12 +2084,11 @@ def prepare_hydration_inputs(dry_pdb_file):
 	]:
 		shutil.copy(os.path.join(hyd_eq_input_dir, inputs), hyd_eq_dir)
 
-def run_hydration_workflow(dry_pdb_file, nproc, scratch_dir):
+def run_hydration_workflow(dry_pdb_file, nproc, scratch_dir, num_sulfonic_sites):
 	os.chdir(hyd_eq_dir)
 
 	base_hyd_pdb = dry_pdb_file
 	a, b, c = get_pdb_box_lengths(base_hyd_pdb)
-	num_S = count_pdb_element(base_hyd_pdb, "S")
 
 	for i, lam in enumerate(lam_list):
 		if i > 0:
@@ -2103,9 +2100,9 @@ def run_hydration_workflow(dry_pdb_file, nproc, scratch_dir):
 		add_lam = lam - prev_lam
 		if add_lam <= 0:
 			raise ValueError(f"lam_list must be strictly increasing. Previous lambda={prev_lam}, current lambda={lam}")
-		num_h2o = add_lam * num_S
+		num_h2o = add_lam * num_sulfonic_sites
 		with open(output, 'a') as f:
-			print(f"\tHydration lambda={lam}: target total H2O={lam * num_S}", file=f)
+			print(f"\tHydration lambda={lam}: target total H2O={lam * num_sulfonic_sites}", file=f)
 		
 		lam_tag = hyd_system_name(polymer, chain_length, num_chains, lam, mix_chains)
 		
@@ -2248,6 +2245,14 @@ def run_conductivity_workflow(nproc, chain_lengths, scratch_dir):
 		cleaner = PDBCleaner(hyd_pdb, hyd_clean_pdb, chain_length, num_chains, mix_chains, chain_lengths)
 		cleaner.remove_so3h_hydrogens()
 		
+		if cleaner.hydrogens_removed_count != num_sulfonic_sites:
+			raise RuntimeError(
+				f"Expected {num_sulfonic_sites} "
+				f"sulfonic-acid hydrogens in the polymer "
+				f"system, but removed "
+				f"{cleaner.hydrogens_removed_count}."
+				)
+		
 		num_h3o = cleaner.hydrogens_removed_count
 		
 		with open(output, 'a') as f:
@@ -2313,6 +2318,8 @@ def run_workflow():
 	resolved_scratch_dir = get_scratch_dir(scratch_dir)
 	
 	chain_lengths = generate_chain_lengths(chain_length, num_chains, mix_chains, mix_seed, mix_chain_fraction)
+	num_sulfonic_acid_groups, protonated_charge, deprotonated_charge = get_psmiles_chemistry(polymer_psmiles)
+	num_sulfonic_sites = (num_sulfonic_acid_groups * sum(chain_lengths))
 	system_tag = system_name(polymer, chain_length, num_chains, mix_chains)
 	conf_output_file = f"{polymer}_conf.txt"
 
@@ -2323,7 +2330,7 @@ def run_workflow():
 		orca_profile = get_orca_profile(orca_dir)
 		build_monomer_and_conformers()
 		selected_conf = optimize_and_rank_conformers(conf_output_file, nnp_calc)
-		run_parameterization(selected_conf, chain_lengths, nproc, orca_profile)
+		run_parameterization(selected_conf, chain_lengths, nproc, orca_profile, protonated_charge, deprotonated_charge, num_sulfonic_acid_groups)
 		
 	dry_pdb_file = None
 	if run_dry:
@@ -2331,7 +2338,7 @@ def run_workflow():
 
 	if run_hyd and dry_pdb_file is not None:
 		prepare_hydration_inputs(dry_pdb_file)
-		run_hydration_workflow(dry_pdb_file, nproc, resolved_scratch_dir)
+		run_hydration_workflow(dry_pdb_file, nproc, resolved_scratch_dir, num_sulfonic_sites)
 
 	if run_cond:
 		prepare_conductivity_inputs()
