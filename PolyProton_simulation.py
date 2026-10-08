@@ -44,7 +44,7 @@ polymer = 'spi'
 polymer_psmiles = ("[*:1]C=6C(=CC(N1C(C=2C=CC=4C(N(C(C3=CC=C(C1=O)C=2C3=4)=O)C=5C=C(C([*:2])=CC=5)S(O)(=O)=O)=O)=O)=CC=6)S(O)(=O)=O")
 
 # Conformer settings
-conf_num = 50
+conf_num = 2
 conf_selection = "LE"	 
 conf_far_fraction = 0.5
 conf_prune_rms_thresh = 0.02	
@@ -383,7 +383,7 @@ def read_anchor_indices(polymer):
 
 	return indices			  
 
-def log_settings(chain_lengths, system_tag, nproc, resolved_scratch_dir):
+def log_settings(chain_lengths, system_tag, nproc, resolved_scratch_dir, num_sulfonic_acid_groups, protonated_charge, deprotonated_charge):
 	log_message(f"Processing polymer: {polymer} with polymer_psmiles: {polymer_psmiles}")
 	log_message(f"\tnum_sulfonic_acid_groups = {num_sulfonic_acid_groups}")
 	log_message(f"\tprotonated_charge = {protonated_charge}")
@@ -535,7 +535,7 @@ def get_psmiles_chemistry(polymer_psmiles):
 	matches = mol.GetSubstructMatches(so3h_pattern)
 	sulfur_indices = {match[0] for match in matches}
 	num_sulfonic_acid_groups = len(sulfur_indices)
-	protonated_charge = int(Chem.GetFromalCharge(mol))
+	protonated_charge = int(Chem.GetFormalCharge(mol))
 	deprotonated_charge = (protonated_charge - num_sulfonic_acid_groups)
 	
 	return (num_sulfonic_acid_groups, protonated_charge, deprotonated_charge)
@@ -1320,27 +1320,39 @@ class Dry_BulkCreator:
 	def rotate_chain(self, input_pdb, output_pdb):
 		parser = PDBParser(QUIET=True)
 		pdb_structure = parser.get_structure('original', input_pdb)
+
 		single_chain = read(input_pdb)
 		positions = single_chain.get_positions()
+
 		center_of_mass = np.mean(positions, axis=0)
 		single_chain.translate(-center_of_mass)
+		
 		cov_matrix = np.cov(positions.T)
-		eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
+		eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
 		longest_axis = eigenvectors[:, np.argmax(eigenvalues)]
-		z_axis = np.array([0, 0, 1])
+		z_axis = np.array([0.0, 0.0, 1.0])
 		rotation_axis = np.cross(longest_axis, z_axis)
-		denom = np.linalg.norm(longest_axis) * np.linalg.norm(z_axis)
-		if denom == 0:
-			rotation_angle = 0.0
-		else:
-			rotation_angle = np.arccos(np.clip(np.dot(longest_axis, z_axis) / denom, -1.0, 1.0))
-		single_chain.rotate(v=rotation_axis, a=np.degrees(rotation_angle), center='COM')
+		
+		cos_angle = np.clip(np.dot(longest_axis, z_axis) / np.linalg.norm(longest_axis), -1.0, 1.0)
+
+		rotation_angle = np.arccos(cos_angle)
+		rotation_angle_deg = np.degrees(rotation_angle)	   
+
+		axis_norm = np.linalg.norm(rotation_axis)
+		
+		if axis_norm > 1e-12:
+			single_chain.rotate(v=rotation_axis / axis_norm, a=rotation_angle_deg, center='COM')
+		elif cos_angle < 0:
+			single_chain.rotate(v=[1.0, 0.0, 0.0], a=180.0, center='COM')		 
+		
 		new_positions = single_chain.get_positions()
+	
 		for i, atom in enumerate(pdb_structure.get_atoms()):
 			atom.set_coord(new_positions[i])
+	
 		io = PDBIO()
 		io.set_structure(pdb_structure)
-		io.save(output_pdb)
+		io.save(output_pdb)		   
 
 	def box_dimension_single(self, pdb_file):
 		structure = read(pdb_file)
@@ -2323,7 +2335,7 @@ def run_workflow():
 	system_tag = system_name(polymer, chain_length, num_chains, mix_chains)
 	conf_output_file = f"{polymer}_conf.txt"
 
-	log_settings(chain_lengths, system_tag, nproc, resolved_scratch_dir)
+	log_settings(chain_lengths, system_tag, nproc, resolved_scratch_dir, num_sulfonic_acid_groups, protonated_charge, deprotonated_charge)
 
 	if run_param:
 		nnp_calc = get_mace_calculator(use_mace_device, nproc)
