@@ -44,7 +44,7 @@ polymer = 'spi'
 polymer_psmiles = ("[*:1]C=6C(=CC(N1C(C=2C=CC=4C(N(C(C3=CC=C(C1=O)C=2C3=4)=O)C=5C=C(C([*:2])=CC=5)S(O)(=O)=O)=O)=O)=CC=6)S(O)(=O)=O")
 
 # Conformer settings
-conf_num = 2
+conf_num = 50
 conf_selection = "LE"	 
 conf_far_fraction = 0.5
 conf_prune_rms_thresh = 0.02	

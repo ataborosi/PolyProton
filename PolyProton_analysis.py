@@ -23,7 +23,7 @@ warnings.simplefilter("ignore")
 # ====
 
 # Polymer system settings
-polymer = "a1"
+polymer = 'spi'
 
 chain_length = 10
 num_chains = 15
