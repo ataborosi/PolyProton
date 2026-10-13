@@ -2224,7 +2224,7 @@ def prepare_conductivity_inputs():
 	]:
 		shutil.copy(os.path.join(init_dir, params), cond_pr_dir)
 
-def run_conductivity_workflow(nproc, chain_lengths, scratch_dir):
+def run_conductivity_workflow(nproc, chain_lengths, scratch_dir, num_sulfonic_sites):
 	for lam in cond_lam_list:	 
 		lam_cond_pr_dir = os.path.join(cond_pr_dir, f"{lam}_h3o-h2o")
 		lam_cond_init_dir = os.path.join(lam_cond_pr_dir, "init")
@@ -2354,7 +2354,7 @@ def run_workflow():
 
 	if run_cond:
 		prepare_conductivity_inputs()
-		run_conductivity_workflow(nproc, chain_lengths, resolved_scratch_dir)
+		run_conductivity_workflow(nproc, chain_lengths, resolved_scratch_dir, num_sulfonic_sites)
 
 if __name__ == "__main__":
 	run_workflow()
