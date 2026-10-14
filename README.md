@@ -4,11 +4,11 @@
 
 # PolyProton
 This repository contains an automated workflow for constructing, equilibrating, and analyzing
-sulfonated polyimide (SPI) electrolyte systems for proton conductivity studies. The workflow
-is designed around Amber molecular dynamics simulations and post processing of dry, hydrated
-and hydronium containing conductivity systems. The workflow is currently tailored to sulfonated
-polyimide, but the code structure can be adapted to related polymer electrolyte systems by 
-changing the monomer SMILES definitions, residue templates, input files, and analysis settings.
+proton conducting polymer electrolyte systems, with current validation focused on sulfonated 
+polyimide (SPI). The workflow designed around Amber molecular dynamics simulations and post 
+processing of dry, hydrated, and hydronium containing conducitvity systems. Polymer monomer 
+unit are defined using PSMILES style strings with two explicit polymerization endpoints and 
+are parsed directly by RDKit.
 
 ## Workflow overview
 The complete workflow has two main codes:
@@ -18,7 +18,8 @@ The complete workflow has two main codes:
 The simulation workflow is organized into four stages:
 
 1. Parameterization / structure generation
-	- Builds the SPI monomer from backbone and sulfonated side-chain SMILES
+	- Reads the polymer monomer unit from a PSMILES-style definition using RDKit
+	- Identifies the two `[*]` polymerization endpoints and preserves theri head/tail order
 	- Generates conformers using RDKit
 	- Optimizes and ranks conformers based on energy using MACE (mace-off)
 	- Selects either the lowest or a higher energy conformer
@@ -72,17 +73,18 @@ Most user controlled simulation settings are defined near the top of "PolyProton
 The simulation workflow is intended to be run from the project root directory.
 Simulation files are written under the `simulation/` folder, while analysis results are written
 separately under the `analysis/` folder.
-For v1.0.0, start each new calculation in a clean working directory containing the workflow scripts and the complete `input_files/` folder.
-Use working and scratch paths without spaces. Automatic restart/resume support is not provided yet.
+For new systems, start in a clean working directory containing the workflow scripts and the complete
+`input_files/` folder.
+Existing systems can be restarted at the begining of a selected workflow stage when all required outputs
+from preceding stages are available.
+Use working and scratch paths withous spaces. Automatic resume from an interrupted stpe within a stage
+is not yet supported.
 
 Example:
 ```
 # Polymer / monomer settings
-polymer = 'a1'
-
-dianhydride_smiles = 'C1=CC2=C3C(=CC=C4C3=C1C(=O)OC4=O)C(=O)OC2=O'
-sidechain_smiles = "OCCCS(O)(=O)=O"
-benzene_smiles = "C1=CC=CC=C1"
+polymer = 'spi'
+polymer_psmiles = ("[*:1]C=6C(=CC(N1C(C=2C=CC=4C(N(C(C3=CC=C(C1=O)C=2C3=4)=O)C=5C=C(C([*:2])=CC=5)S(O)(=O)=O)=O)=O)=CC=6)S(O)(=O)=O")
 
 # Conformer settings
 conf_num = 50
@@ -115,7 +117,7 @@ run_cond = True
 
 # Computational resources
 use_gpu = True
-use_nproc = 24
+use_nproc = 16
 use_mace_device = "cuda"
 
 # External software / scratch paths
@@ -126,10 +128,8 @@ scratch_dir = None
 Important options:
 | Setting | Meaning |
 |---|---|
-| `polymer` | Polymer label, such as `a1`, `a6`, or `a8`. This label is used in generated file names. |
-| `dianhydride_smiles` | SMILES string of the dianhydride-backbone unit. |
-| `sidechain_smiles` | SMILES string of the sulfonated side chain. |
-| `benzene_smiles` | SMILES string of the benzene-backbone unit. |
+| `polymer` | User-defined polymer label used in generated files name and the resiude name in PBD file (must be 3 characters) |
+| `polymer_psmiles` | PSMILES-style monomer unit definition parsed by RDKit. It must contain exactly two polymerization endpoints, preferably `[*:1]` and `[*:2]`, which define the head and tail anchors. |
 | `conf_num` | Target number of conformers to generate. The actual number may be lower after RDKit pruning. |
 | `conf_selection` | Selects the conformer used for parameterization. `"LE"` selects the lowest-energy conformer. `"HE"` randomly selects a conformer from the highest-energy fraction of the remaining conformers, as defined by `conf_far_fraction`. |
 | `temperature` | Temperature used when calculating the reported Boltzmann populations of the optimized conformers. It does not change the `"LE"`/`"HE"` conformer-selection rule. |
@@ -174,11 +174,11 @@ The following settings must match the simulation settings because they are used 
 the expected system names and locate the correct simulation files:
 
 ```
-polymer = "a1"
+polymer = 'spi'
 
-chain_length = 15
-num_chains = 30
-mix_chains = True
+chain_length = 10
+num_chains = 15
+mix_chains = False
 
 hyd_analysis_lam_list = [12]
 cond_analysis_lam_list = [12]
@@ -208,20 +208,32 @@ Important options:
 | `dry_eq_prot` | Must match the dry equilibration protocol used in the simulation. It determines which dry production trajectory is analyzed. |
 
 
-## Workflow stage dependencies
+## Workflow stage dependencies and restarting calculations
 
 The workflow stages are sequential. Hydrated equilibration requires the dry equilibration stage to be run in the same workflow execution:
 
 `parameterization → dry equilibration → hydrated equilibration → conductivity`
 
-When `run_hyd = True`, `run_dry` must also be enabled so that the dry equilibrated structure is passed to the hydration workflow.
+Completed stages can be skipped using the `run_param`, `run_dry`, `run_hyd`, and `run_cond` settings. This allows the workflow to start again
+from a later stage, provided the corresponding fiels and directories produced by preceding stages are still available and compatible with the current
+simulation settings.
 
-Conductivity calculations require the corresponding hydrated system and parameterization files to already be available.
+For example, to repeat the dry equilibration without repeateing conformer generation and parameterizaiton:
+```
+run_param = False
+run_dry = True
+run_hyd = False
+run_cond = False
+```
+Likewise, `run_hyd = True` can be used with `run_dry = False` when the required dry equilibrated system is already available. Conductivity calculations
+can also be run separately with `run_hyd = True` when the required hydrated system and parameterization files exist. This is a restart from the
+*beginning of a workflow stage*, not an automatic resume from the last completed MD step. If execution fails partway through dry equilibration, hydration, or conductivity simulation, rerunning that stage starts it again rather than continuing from the failed step.
 
 ## Notes and limitations
 
 Workflow limitations
 - The workflow assumes that required input templates, water/hydronium PDB files, Amber input files, and force-field files are present in `input_files/`.
+- The PSMILES monomer unit parser currently supports linear polymers with exactly two polymerization endpoints.
 - The conductivity simulation is set to 100 ns, which cannot be changed right now. 
 - Fitting window for MSD is set to 10-100 ns by default. This should be checked for each system to ensure that the selected time range is approximately linear.
 
