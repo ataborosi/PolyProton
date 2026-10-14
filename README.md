@@ -73,8 +73,12 @@ Most user controlled simulation settings are defined near the top of "PolyProton
 The simulation workflow is intended to be run from the project root directory.
 Simulation files are written under the `simulation/` folder, while analysis results are written
 separately under the `analysis/` folder.
-For v1.1.0, start each new calculation in a clean working directory containing the workflow scripts and the complete `input_files/` folder.
-Use working and scratch paths without spaces. Automatic restart/resume support is not provided yet.
+For new systems, start in a clean working directory containing the workflow scripts and the complete
+`input_files/` folder.
+Existing systems can be restarted at the begining of a selected workflow stage when all required outputs
+from preceding stages are available.
+Use working and scratch paths withous spaces. Automatic resume from an interrupted stpe within a stage
+is not yet supported.
 
 Example:
 ```
@@ -204,15 +208,26 @@ Important options:
 | `dry_eq_prot` | Must match the dry equilibration protocol used in the simulation. It determines which dry production trajectory is analyzed. |
 
 
-## Workflow stage dependencies
+## Workflow stage dependencies and restarting calculations
 
 The workflow stages are sequential. Hydrated equilibration requires the dry equilibration stage to be run in the same workflow execution:
 
 `parameterization → dry equilibration → hydrated equilibration → conductivity`
 
-When `run_hyd = True`, `run_dry` must also be enabled so that the dry equilibrated structure is passed to the hydration workflow.
+Completed stages can be skipped using the `run_param`, `run_dry`, `run_hyd`, and `run_cond` settings. This allows the workflow to start again
+from a later stage, provided the corresponding fiels and directories produced by preceding stages are still available and compatible with the current
+simulation settings.
 
-Conductivity calculations require the corresponding hydrated system and parameterization files to already be available.
+For example, to repeat the dry equilibration without repeateing conformer generation and parameterizaiton:
+```
+run_param = False
+run_dry = True
+run_hyd = False
+run_cond = False
+```
+Likewise, `run_hyd = True` can be used with `run_dry = False` when the required dry equilibrated system is already available. Conductivity calculations
+can also be run separately with `run_hyd = True` when the required hydrated system and parameterization files exist. This is a restart from the
+*beginning of a workflow stage*, not an automatic resume from the last completed MD step. If execution fails partway through dry equilibration, hydration, or conductivity simulation, rerunning that stage starts it again rather than continuing from the failed step.
 
 ## Notes and limitations
 

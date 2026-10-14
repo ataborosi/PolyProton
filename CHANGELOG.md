@@ -4,12 +4,16 @@ Changes to released versions of PolyProton are documented here.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-14
+
 ### Added
 
 - PSMILES based polymer monomer unit definition using RDKit
 - Support for explicit polymerization endpoint using `[*:1]` and `[*:2]`.
 - Automatic detection of sulfonic acid groups from the polymer PSMILES.
 - Automatic determination of protonated and deprotonated monomer unit charges.
+- Stage level restart support: completed stages can be skipped and dry, hydration,
+or conductivity workflows rerun when prerequisite files and directories exist.
 
 ### Changed
 - Replaced the SPI-specific monomer assembly from separate dianhydride, benzene, 
@@ -24,7 +28,11 @@ fixed `-2` repeat-unit charge.
 rather than the total number of sulfur atoms.
 - Conductivity-system hydronium counts are validated against the expected number of
 sulfonic acid sites.
-- - Amber residue charges used during PREPGEN are derived from the detected monomer unit chemistry
+- Amber residue charges used during PREPGEN are derived from the detected monomer unit chemistry
+
+### Known limitaitons
+- Stage level restarts begin at the start of the selected workflow stage, automatic resumption from
+an interrupted intermediate MD step is not yet supported.
 
 ## [1.0.0] - 2026-10-02
 
