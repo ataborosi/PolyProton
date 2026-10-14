@@ -30,7 +30,7 @@ rather than the total number of sulfur atoms.
 sulfonic acid sites.
 - Amber residue charges used during PREPGEN are derived from the detected monomer unit chemistry
 
-### Known limitaitons
+### Known limitations
 - Stage level restarts begin at the start of the selected workflow stage, automatic resumption from
 an interrupted intermediate MD step is not yet supported.
 

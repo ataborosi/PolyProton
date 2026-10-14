@@ -1,12 +1,12 @@
 cff-version: 1.2.0
 type: software
 title: "PolyProton"
-date-released: "2026-10-02"
+date-released: "2026-10-14"
 message: >-
   If you use PolyProton, please cite the software release.
   The references below describe methodological foundations
   of the workflow.
-version: "1.0.0"
+version: "1.1.0"
 license: BSD-3-Clause
 repository-code: "https://github.com/ataborosi/PolyProton"
 
