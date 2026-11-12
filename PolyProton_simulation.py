@@ -63,6 +63,7 @@ aligned = True
 # Hydration / conductivity
 lam_list = [2, 4, 6, 8, 10, 12]
 cond_lam_list = [12]
+cond_pr_ns = 100.0
 
 # Equilibration protocol
 dry_eq_prot = "6-step" 
@@ -369,6 +370,9 @@ def validate_settings():
 	
 	if len(polymer) != 3 or not polymer.isalnum():
 		raise ValueError("polymer must contain exactly 3 characters, because used for PDB resideu name")
+
+	if not math.isfinite(cond_pr_ns) or cond_pr_ns <= 0:
+		raise ValueError("cond_pr_ns must be positive finite number")
 	
 def write_anchor_indices(polymer, anchor_indices):
 	with open(f"{polymer}_anchors.txt", "w") as f:
@@ -417,6 +421,7 @@ def log_settings(chain_lengths, system_tag, nproc, resolved_scratch_dir, num_sul
 	log_message(f"\tuse_mace_device = {use_mace_device}")
 	log_message(f"\torca_dir = {orca_dir}")
 	log_message(f"\tscratch_dir = {resolved_scratch_dir}")
+	log_message(f"\tcond_pr_ns = {cond_pr_ns}")
 
 def get_pdb_box_lengths(pdb_file):
 	with open(pdb_file, "r") as f:
@@ -572,6 +577,18 @@ def write_amber_nstlim(input_file, output_file, nstlim):
 	with open(output_file, "w", encoding="utf-8") as f:
 		f.write(modified)
 
+def production_nstlim(input_file, production_ns):
+	dt_ps = read_amber_control_value(input_file, "dt")
+	if dt_ps <= 0:
+		raise ValueError(f"Invalid timestep in {input_file}")
+	
+	steps_float = production_ns * 1000.0 / dt_ps
+	nsteps = int(round(steps_float))
+	
+	if nsteps <= 0 or not match.isclose(steps_float, nsteps, rel_tol=0, abs_tol=1e-5):
+		raise ValueError("Requested conductivity duration cannot be represented by an integer number of MD steps.")
+
+	return nsteps, dt_ps
 
 # ====
 # Structure & file modification classes
@@ -2340,6 +2357,13 @@ def prepare_conductivity_inputs():
 		"cond_pr-nvt.in",
 	]:
 		shutil.copy(os.path.join(cond_pr_input_dir, fname), cond_pr_dir)
+
+	production_template = os.path.join(cond_pr_input_dir, "cond_pr-nvt.in")
+	production_input = os.path.join(cond_pr_dir, "cond_pr-nvt.in")
+	nsteps, dt_ps = production_nstlim(production_template, cond_pr_ns)
+	write_amber_nstlim(production_template, production_input, nsteps)
+
+	log_message(f"\tConductivity production duration = {cond_production_ns:g} ns, nstlim = {nsteps}, dt = {dt_ps:g} ps")
 	
 	for params in [
 		"h_so3.prepi",
