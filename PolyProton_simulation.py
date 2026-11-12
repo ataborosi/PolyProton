@@ -70,21 +70,21 @@ dry_eq_prot = "6-step"
 # Workflow stages
 run_param = True
 run_dry = True
-run_hyd = True
-run_cond = True
+run_hyd = False
+run_cond = False
 
 # Computational resources
 use_gpu = True
-use_nproc = 16
+use_nproc = 24
 use_mace_device = "cuda"
 
 # GPU NPT equilibration settings
 gpu_npt_segment_ps = 10.0
-gpu_npt_keep_segments = True
+gpu_npt_keep_segments = False
 
 # External software / scratch paths
 orca_dir = "/opt/orca"
-scratch_dir = None
+scratch_dir = "/home/Calculations/taborosi"
 
 # ====
 # Paths / Folders
@@ -1634,6 +1634,7 @@ class Dry_MDSimulation():
 			remaining_steps -= nsteps
 		log_message(f"\t{step_name}: GPU NPT total = {total_time_ps:.1f} ps, segments = {len(segment_steps)}")
 		
+		segment_input_files = []
 		segment_nc_files = []
 		segment_restart_files = []
 		segment_output_files = []
@@ -1656,6 +1657,7 @@ class Dry_MDSimulation():
 			if not os.path.isfile(segment_nc):
 				raise RuntimeError(f"Missing trajectory: {segment_nc}")
 			
+			segment_input_files.append(segment_input)
 			segment_nc_files.append(segment_nc)
 			segment_restart_files.append(segment_restart)
 			segment_output_files.append(segment_output)
@@ -1686,8 +1688,10 @@ class Dry_MDSimulation():
 					shutil.copyfileobj(source, merged)
 		
 		if not self.gpu_npt_keep_segments:
-			for filename in segment_nc_files + segment_restart_files:
-				os.remove(filename)
+			segment_files = (segment_input_files + segment_output_files + segment_nc_files + segment_restart_files)
+			for filename in segment_files:
+				if os.path.isfile(filename):
+					os.remove(filename)
 		log_message(f"\t{step_name}: GPU NPT completed, total = {total_time_ps:.1f} ps")
 
 	def run_all_steps(self, protocol):
