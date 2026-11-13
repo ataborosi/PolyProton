@@ -63,16 +63,16 @@ aligned = True
 # Hydration / conductivity
 lam_list = [2, 4, 6, 8, 10, 12]
 cond_lam_list = [12]
-cond_pr_ns = 100.0
+cond_pr_ns = 10.0
 
 # Equilibration protocol
 dry_eq_prot = "6-step" 
 
 # Workflow stages
-run_param = True
-run_dry = True
+run_param = False
+run_dry = False
 run_hyd = False
-run_cond = False
+run_cond = True
 
 # Computational resources
 use_gpu = True
@@ -585,7 +585,7 @@ def production_nstlim(input_file, production_ns):
 	steps_float = production_ns * 1000.0 / dt_ps
 	nsteps = int(round(steps_float))
 	
-	if nsteps <= 0 or not match.isclose(steps_float, nsteps, rel_tol=0, abs_tol=1e-5):
+	if nsteps <= 0 or not math.isclose(steps_float, nsteps, rel_tol=0, abs_tol=1e-5):
 		raise ValueError("Requested conductivity duration cannot be represented by an integer number of MD steps.")
 
 	return nsteps, dt_ps
@@ -2363,7 +2363,7 @@ def prepare_conductivity_inputs():
 	nsteps, dt_ps = production_nstlim(production_template, cond_pr_ns)
 	write_amber_nstlim(production_template, production_input, nsteps)
 
-	log_message(f"\tConductivity production duration = {cond_production_ns:g} ns, nstlim = {nsteps}, dt = {dt_ps:g} ps")
+	log_message(f"\tConductivity production duration = {cond_pr_ns:g} ns, nstlim = {nsteps}, dt = {dt_ps:g} ps")
 	
 	for params in [
 		"h_so3.prepi",
