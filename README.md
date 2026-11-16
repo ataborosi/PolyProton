@@ -120,6 +120,10 @@ use_gpu = True
 use_nproc = 16
 use_mace_device = "cuda"
 
+# GPU NPT equilibration settings
+gpu_npt_segment_ps = 100.0
+gpu_npt_keep_segments = False
+
 # External software / scratch paths
 orca_dir = "/opt/orca"
 scratch_dir = None
@@ -160,8 +164,13 @@ GPU/CPU execution
 use_gpu = True
 ```
 When enabled, PolyProton uses a hybrid CPU/GPU execution scheme.
-Dry-stage minimization and NPT steps are run with `pmemd.MPI`, while dry NVT steps are run with `pmemd.cuda`.
+Dry stage minimization runs with `pmemd.MPI`, dry NVT and NPT stages use `pmemd.cuda`.
+Dry NPT is split into consecutive segments controlled by `gpu_npt_segment_ps`.
+Each segment continues from the preceding restart, and cpptraj merges the segment trajectories
+into the original stage filename (like `dry-eq_2-npt.nc`). The final restart file and combined
+text report retain the original stage filenames. The full NPT stage duration is unchaged.
 For hydrated and conductivity workflows, minimization is run with `pmemd.MPI`, while subsequent MD steps are run with `pmemd.cuda`.
+These hydration NPT steps are not segmented.
 ```
 use_gpu = False
 ```
@@ -188,6 +197,15 @@ run_hyd_analysis = True
 run_cond_analysis = True
 
 dry_eq_prot = "6-step"
+
+# Conductivity production and analysis
+cond_pr_ns = 100.0
+cond_frame_start = 1
+cond_frame_stop = "last"
+cond_frame_stride = 10
+msd_fit_start_ns = 1.0
+msd_fit_end_ns = None
+cond_temperature_K = 300.0
 ```
 
 Therefore, when analyzing a simulation, make sure that `polymer`, `chain_length`, `num_chains`, and `mix_chains` in `PolyProton_analysis.py`
@@ -206,11 +224,18 @@ Important options:
 | `run_hyd_analysis` | Enables or disables analysis of hydrated systems. |
 | `run_cond_analysis` | Enables or disables analysis of hydronium-containing conductivity systems. |
 | `dry_eq_prot` | Must match the dry equilibration protocol used in the simulation. It determines which dry production trajectory is analyzed. |
-
+| `cond_pr_ns` | Expected conductivity production duration in ns, set to the simulation's `cond_pr_ns`. |
+| `cond_frame_start` | First trajectorty frame selected for conductivity analysis. |
+| `cond_frame_stop` | Last frame selected; `"last"` uses all available frames without a fixed count. |
+| `cond_frame_stride` | Interval in trajectory frames between saved analysis samples. The physical time interval is calculated from the Amber input. |
+| `msd_fit_start_ns` | Lower limit (ns) of the MSD linear fitting window. |
+| `msd_fit_end_ns` | Upper limit (ns) of the MSD fitting window, or `None` to use `cond_pr_ns`. |
+| `cond_temperature_K` | Temperature used in the Nernst–Einstein conductivity calculation. |
 
 ## Workflow stage dependencies and restarting calculations
 
-The workflow stages are sequential. Hydrated equilibration requires the dry equilibration stage to be run in the same workflow execution:
+The workflow stages are sequential. In the current simulation script, the setting
+`run_hyd = True` requires `run_dry = True` in the same workflow execution:
 
 `parameterization → dry equilibration → hydrated equilibration → conductivity`
 
@@ -225,17 +250,18 @@ run_dry = True
 run_hyd = False
 run_cond = False
 ```
-Likewise, `run_hyd = True` can be used with `run_dry = False` when the required dry equilibrated system is already available. Conductivity calculations
-can also be run separately with `run_hyd = True` when the required hydrated system and parameterization files exist. This is a restart from the
-*beginning of a workflow stage*, not an automatic resume from the last completed MD step. If execution fails partway through dry equilibration, hydration, or conductivity simulation, rerunning that stage starts it again rather than continuing from the failed step.
+Hydrated equilibration cannot currently be restarted alone with `run_dry = False`, because
+`validate_settings()` rejects that combination. Conductivity calculations can be run
+separately with `run_cond = True`, if the required hydrated-system and
+parameterization files already exist. This is a restart from the *beginning of a workflow stage*,
+not an automatic resume from the last completed MD step. If execution fails partway through
+dry equilibration, hydration, or conductivity simulation, rerunning that stage starts it again rather than continuing from the failed step.
 
 ## Notes and limitations
 
 Workflow limitations
 - The workflow assumes that required input templates, water/hydronium PDB files, Amber input files, and force-field files are present in `input_files/`.
 - The PSMILES monomer unit parser currently supports linear polymers with exactly two polymerization endpoints.
-- The conductivity simulation is set to 100 ns, which cannot be changed right now. 
-- Fitting window for MSD is set to 10-100 ns by default. This should be checked for each system to ensure that the selected time range is approximately linear.
 
 Methodology limitations
 - The current conductivity calculation is based on hydronium vehicle diffusion and Nernst-Einstein conductivity.
