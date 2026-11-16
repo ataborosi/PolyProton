@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import random
 import warnings
+import re
 
 import ase
 from ase.io import read, write
@@ -62,24 +63,29 @@ aligned = True
 # Hydration / conductivity
 lam_list = [2, 4, 6, 8, 10, 12]
 cond_lam_list = [12]
+cond_pr_ns = 10.0
 
 # Equilibration protocol
 dry_eq_prot = "6-step" 
 
 # Workflow stages
-run_param = True
-run_dry = True
-run_hyd = True
+run_param = False
+run_dry = False
+run_hyd = False
 run_cond = True
 
 # Computational resources
 use_gpu = True
-use_nproc = 16
+use_nproc = 24
 use_mace_device = "cuda"
+
+# GPU NPT equilibration settings
+gpu_npt_segment_ps = 10.0
+gpu_npt_keep_segments = False
 
 # External software / scratch paths
 orca_dir = "/opt/orca"
-scratch_dir = None
+scratch_dir = "/home/Calculations/taborosi"
 
 # ====
 # Paths / Folders
@@ -364,6 +370,9 @@ def validate_settings():
 	
 	if len(polymer) != 3 or not polymer.isalnum():
 		raise ValueError("polymer must contain exactly 3 characters, because used for PDB resideu name")
+
+	if not math.isfinite(cond_pr_ns) or cond_pr_ns <= 0:
+		raise ValueError("cond_pr_ns must be positive finite number")
 	
 def write_anchor_indices(polymer, anchor_indices):
 	with open(f"{polymer}_anchors.txt", "w") as f:
@@ -412,6 +421,7 @@ def log_settings(chain_lengths, system_tag, nproc, resolved_scratch_dir, num_sul
 	log_message(f"\tuse_mace_device = {use_mace_device}")
 	log_message(f"\torca_dir = {orca_dir}")
 	log_message(f"\tscratch_dir = {resolved_scratch_dir}")
+	log_message(f"\tcond_pr_ns = {cond_pr_ns}")
 
 def get_pdb_box_lengths(pdb_file):
 	with open(pdb_file, "r") as f:
@@ -539,6 +549,46 @@ def get_psmiles_chemistry(polymer_psmiles):
 	deprotonated_charge = (protonated_charge - num_sulfonic_acid_groups)
 	
 	return (num_sulfonic_acid_groups, protonated_charge, deprotonated_charge)
+
+def read_amber_control_value(input_file, key):
+	with open(input_file, "r", encoding="utf-8") as f:
+		lines = f.readlines()
+	
+	content = "\n".join(line.split("!")[0].split("#")[0] for line in lines)
+	matches = re.findall(rf"(?i)\b{re.escape(key)}\s*=\s*([-+]?\d+(?:\.\d*)?(?:[eEdD][-+]?\d+)?)", content)
+	if len(matches) != 1:
+		raise ValueError(f"Expected exactly one {key} settings in {input_file}, found {len(matches)}")
+	
+	return float(matches[0].replace("D", "E").replace("d", "e"))
+
+def write_amber_nstlim(input_file, output_file, nstlim):
+	if not isinstance(nstlim, int) or nstlim <= 0:
+		raise ValueError("nstlim must be a positive integer")
+	
+	with open(input_file, "r", encoding="utf-8") as f:
+		original = f.read()
+	
+	pattern = (r"(?i)(\bnstlim\s*=\s*)([-+]?\d+(?:\.\d*)?(?:[eEdD][-+]?\d+)?)")
+	modified, count = re.subn(pattern, lambda m: m.group(1) + str(nstlim), original)
+
+	if count != 1:
+		raise ValueError(f"Expected one nstlim setting in {input_file}, found {count}")
+	
+	with open(output_file, "w", encoding="utf-8") as f:
+		f.write(modified)
+
+def production_nstlim(input_file, production_ns):
+	dt_ps = read_amber_control_value(input_file, "dt")
+	if dt_ps <= 0:
+		raise ValueError(f"Invalid timestep in {input_file}")
+	
+	steps_float = production_ns * 1000.0 / dt_ps
+	nsteps = int(round(steps_float))
+	
+	if nsteps <= 0 or not math.isclose(steps_float, nsteps, rel_tol=0, abs_tol=1e-5):
+		raise ValueError("Requested conductivity duration cannot be represented by an integer number of MD steps.")
+
+	return nsteps, dt_ps
 
 # ====
 # Structure & file modification classes
@@ -1525,7 +1575,7 @@ class Dry_AmberParams:
 		standardize_pdb_numbering(amber_pdb)
 
 class Dry_MDSimulation():
-	def __init__(self, nproc, output, amber_params: Dry_AmberParams, use_gpu=True, scratch_dir=None):
+	def __init__(self, nproc, output, amber_params: Dry_AmberParams, use_gpu=True, scratch_dir=None, gpu_npt_segment_ps=100.0, gpu_npt_keep_segments=False):
 		self.prmtop = amber_params.prmtop
 		self.inpcrd = amber_params.inpcrd
 		self.nproc = nproc
@@ -1534,6 +1584,8 @@ class Dry_MDSimulation():
 		self.nproc = nproc
 		self.use_gpu = use_gpu
 		self.scratch_dir = scratch_dir
+		self.gpu_npt_segment_ps = float(gpu_npt_segment_ps)
+		self.gpu_npt_keep_segments = gpu_npt_keep_segments
 
 	def run_simulation(self, step_name, input_file, output_file, restart_in, restart_out, reference_file, additional_args=""):
 		with open(self.output, 'a') as f:
@@ -1555,7 +1607,7 @@ class Dry_MDSimulation():
 		os.chdir(temp_dir)
 		
 		if self.use_gpu:
-			if any(x in step_name for x in ["min", "npt"]):
+			if "min" in step_name:
 				cmd = f"mpirun -np {self.nproc} pmemd.MPI -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args}"
 			else:
 				cmd = f"pmemd.cuda -O -i {input_file} -o {output_file} -p {self.prmtop} -c {restart_in} -r {restart_out} -ref {reference_file} {additional_args} -AllowSmallBox"
@@ -1571,6 +1623,93 @@ class Dry_MDSimulation():
 		shutil.rmtree(folder_name)
 		with open(self.output, 'a') as f:
 			print(f"\t\tFinished {step_name} step", file=f)
+
+	def run_gpu_npt_segments(self, step):
+		step_name, input_file, output_file, restart_in, restart_out, reference_file = step[:6]
+		
+		dt = read_amber_control_value(input_file, "dt")
+		total_steps = int(read_amber_control_value(input_file, "nstlim"))
+		ntwx = int(read_amber_control_value(input_file, "ntwx"))
+		
+		if dt <= 0 or total_steps <= 0 or ntwx <= 0:
+			raise ValueError(f"Invalid Amber input parameters: {input_file}")
+		if self.gpu_npt_segment_ps <= 0:
+			raise ValueError("gpu_npt_segment_ps must be positive")
+		if total_steps % ntwx != 0:
+			raise ValueError("NPT nstlim must be divisible by ntwx")
+		
+		total_time_ps = total_steps * dt
+		steps_per_segment = int(self.gpu_npt_segment_ps / (dt * ntwx) + 1e-9) * ntwx
+		if steps_per_segment < ntwx:
+			raise ValueError("GPU NPT segment must contain at least one trajectory frame")
+		
+		segment_steps = []
+		remaining_steps = total_steps
+		while remaining_steps > 0:
+			nsteps = min(steps_per_segment, remaining_steps)
+			segment_steps.append(nsteps)
+			remaining_steps -= nsteps
+		log_message(f"\t{step_name}: GPU NPT total = {total_time_ps:.1f} ps, segments = {len(segment_steps)}")
+		
+		segment_input_files = []
+		segment_nc_files = []
+		segment_restart_files = []
+		segment_output_files = []
+		previous_restart = restart_in
+		
+		for i, nsteps in enumerate(segment_steps, start=1):
+			segment_name = f"{step_name}_part-{i:02d}"
+			segment_input = f"{segment_name}.in"
+			segment_output = f"{segment_name}.out"
+			segment_restart = f"{segment_name}.ncrst"
+			segment_nc = f"{segment_name}.nc"
+			
+			write_amber_nstlim(input_file, segment_input, nsteps)
+			log_message(f"\t{step_name}: segment{i}/{len(segment_steps)}, duration = {nsteps * dt:.1f} ps")
+			
+			self.run_simulation(segment_name, segment_input, segment_output, previous_restart, segment_restart, previous_restart, f"-x {segment_nc}")
+			
+			if not os.path.isfile(segment_restart):
+				raise RuntimeError(f"Missing restart: {segment_restart}")
+			if not os.path.isfile(segment_nc):
+				raise RuntimeError(f"Missing trajectory: {segment_nc}")
+			
+			segment_input_files.append(segment_input)
+			segment_nc_files.append(segment_nc)
+			segment_restart_files.append(segment_restart)
+			segment_output_files.append(segment_output)
+			previous_restart = segment_restart
+			
+		merged_nc = f"{step_name}.nc"
+		cpptraj_input = f"cpptraj_{step_name}_merge.in"
+		with open(cpptraj_input, "w") as f:
+			for nc_file in segment_nc_files:
+				f.write(f"trajin {nc_file}\n")
+			f.write(f"trajout {merged_nc} netcdf\n")
+		if os.path.exists(merged_nc):
+			os.remove(merged_nc)
+		
+		run_command(f"cpptraj -p {self.prmtop} -i {cpptraj_input}")
+		
+		if not os.path.isfile(merged_nc) or os.path.getsize(merged_nc) == 0:
+			raise RuntimeError(f"Failed to merge NPT trajectory: {merged_nc}")
+			
+		shutil.copy2(previous_restart, restart_out)
+		
+		with open(output_file, "w") as merged:
+			merged.write(f"Segmented GPU NPT: {step_name}\n"
+				f"Total duration: {total_time_ps:.1f} ps\n")
+			for segment_output in segment_output_files:
+				merged.write(f"\n===== {segment_output} =====\n")
+				with open(segment_output, "r") as source:
+					shutil.copyfileobj(source, merged)
+		
+		if not self.gpu_npt_keep_segments:
+			segment_files = (segment_input_files + segment_output_files + segment_nc_files + segment_restart_files)
+			for filename in segment_files:
+				if os.path.isfile(filename):
+					os.remove(filename)
+		log_message(f"\t{step_name}: GPU NPT completed, total = {total_time_ps:.1f} ps")
 
 	def run_all_steps(self, protocol):
 		if protocol == "6-step":
@@ -1605,7 +1744,10 @@ class Dry_MDSimulation():
 			raise ValueError(f"Unknown dry equilibration protocol: {protocol}")
 
 		for step in steps:
-			self.run_simulation(*step)
+			if self.use_gpu and step[0].endswith("-npt"):
+				self.run_gpu_npt_segments(step)
+			else:
+				self.run_simulation(*step)
 
 # ====
 # Hydration-stage classes
@@ -2023,7 +2165,7 @@ def run_dry_workflow(chain_lengths, system_tag, nproc, scratch_dir):
 		shutil.copy(os.path.join(dry_eq_input_dir, inputs), dry_eq_dir)	   
 
 	log_message("\tDry equilibration MD simulations started")
-	dry_md = Dry_MDSimulation(nproc, output, amber_params=dry_amber, use_gpu=use_gpu, scratch_dir=scratch_dir)
+	dry_md = Dry_MDSimulation(nproc, output, amber_params=dry_amber, use_gpu=use_gpu, scratch_dir=scratch_dir, gpu_npt_segment_ps=gpu_npt_segment_ps, gpu_npt_keep_segments=gpu_npt_keep_segments)
 	dry_md.run_all_steps(dry_eq_prot)
 	log_message("\tDry equilibration MD simulations finished")
 
@@ -2215,6 +2357,13 @@ def prepare_conductivity_inputs():
 		"cond_pr-nvt.in",
 	]:
 		shutil.copy(os.path.join(cond_pr_input_dir, fname), cond_pr_dir)
+
+	production_template = os.path.join(cond_pr_input_dir, "cond_pr-nvt.in")
+	production_input = os.path.join(cond_pr_dir, "cond_pr-nvt.in")
+	nsteps, dt_ps = production_nstlim(production_template, cond_pr_ns)
+	write_amber_nstlim(production_template, production_input, nsteps)
+
+	log_message(f"\tConductivity production duration = {cond_pr_ns:g} ns, nstlim = {nsteps}, dt = {dt_ps:g} ps")
 	
 	for params in [
 		"h_so3.prepi",

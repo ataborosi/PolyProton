@@ -5,6 +5,7 @@ import shutil
 import glob
 import subprocess
 import warnings
+import re
 from scipy.spatial import cKDTree
 from io import StringIO
 
@@ -41,6 +42,26 @@ run_cond_analysis = True
 # Dry equilibration protocol
 # "6-step" or "12-step"
 dry_eq_prot = "6-step"
+
+# Conductivity production duration
+cond_pr_ns = 100.0
+
+# Conductivity frame selection
+cond_frame_start = 10
+cond_frame_stop = "last"
+cond_frame_stride = 10
+
+# MSD fitting window
+msd_fit_start_ns = 1.0
+msd_fit_end_ns = None
+
+# Convert fitting window to ps
+msd_fit_start_ps = msd_fit_start_ns * 1000.0
+msd_fit_end_ps = (cond_pr_ns if msd_fit_end_ns is None else msd_fit_end_ns) * 1000.0
+
+# Conductivity calculation
+cond_temperature_K = 300.0
+
 
 # ====
 # Paths / Folders
@@ -119,19 +140,6 @@ water_oo_cutoff = 3.5
 # Conductivity production trajectory
 cond_traj_file = "cond_pr-nvt.nc"
 cond_restart_file = "cond_pr-nvt.ncrst"
-
-# Conductivity frame selection
-cond_frame_start = 1
-cond_frame_stop = 10000
-cond_frame_stride = 10
-cond_time_between_nc_frames_ps = 10.0
-
-# MSD fitting window
-msd_fit_start_ps = 10000.0	 # 10 ns
-msd_fit_end_ps = 100000.0	 # 100 ns
-
-# Conductivity calculation
-cond_temperature_K = 300.0
 
 # Residence analysis
 h3o_s_residence_cutoff = 4.0  # A
@@ -692,7 +700,7 @@ def log_hyd_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir):
 	log_message(f"\thyd_rdf_pairs = {hyd_rdf_pairs}")
 	log_message(f"\twater_oo_cutoff = {water_oo_cutoff}")
 
-def log_cond_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir):
+def log_cond_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir, nc_frame_dt_ps, sample_dt_ps):
 	log_message("Conductivity analysis settings")
 	log_message(f"\tlambda = {lam}")
 	log_message(f"\tlam_tag = {lam_tag}")
@@ -706,11 +714,36 @@ def log_cond_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir):
 	log_message(f"\tcond_frame_start = {cond_frame_start}")
 	log_message(f"\tcond_frame_stop = {cond_frame_stop}")
 	log_message(f"\tcond_frame_stride = {cond_frame_stride}")
-	log_message(f"\tcond_time_between_nc_frames_ps = {cond_time_between_nc_frames_ps}")
+	log_message(f"\tcond_pr_ns = {cond_pr_ns}")
+	log_message(f"\tcond_nc_frame_interval_ps = {nc_frame_dt_ps}")
+	log_message(f"\tcond_sample_interval_ps = {sample_dt_ps}")
 	log_message(f"\tmsd_fit_start_ps = {msd_fit_start_ps}")
 	log_message(f"\tmsd_fit_end_ps = {msd_fit_end_ps}")
 	log_message(f"\tcond_temperature_K = {cond_temperature_K}")
 	log_message(f"\th3o_s_residence_cutoff = {h3o_s_residence_cutoff}")
+
+
+def read_amber_control_value(input_file, key):
+	with open(input_file, "r", encoding="utf-8") as f:
+		lines = f.readlines()
+	content = "\n".join(line.split("!")[0].split("#")[0] for line in lines)
+	pattern = (rf"(?i)\b{re.escape(key)}\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][-+]?\d+)?)")
+	matches = re.findall(pattern, content)
+	if len(matches) != 1:
+		raise ValueError(f"Expected exaclty one {key} in {input_file}, found {len(matches)}")
+	return float(matches[0].replace("D", "E").replace("d", "e"))
+
+def get_cond_nc_frame_interval_ps(lam_md_dir):
+	input_file = os.path.join(lam_md_dir, "cond_pr-nvt.in")
+	dt_ps = read_amber_control_value(input_file, "dt")
+	ntwx = read_amber_control_value(input_file, "ntwx")
+	
+	if not np.isfinite(dt_ps) or dt_ps <= 0:
+		raise ValueError(f"Invalid dt in {input_file}")
+	if not np.isfinite(ntwx) or ntwx <= 0 or not ntwx.is_integer():
+		raise ValueError(f"Invalid ntwx in {input_file}")
+	
+	return dt_ps * int(ntwx)
 
 def get_pdb_box_lengths(pdb_file):
 	with open(pdb_file, "r") as f:
@@ -1728,10 +1761,11 @@ class Cond_TrajectoryPreparation:
 		return self.h3o_unwrapped_pdb
 
 class Cond_H3OMSDAnalysis:
-	def __init__(self, lam, h3o_unwrapped_pdb, lam_analysis_dir):
+	def __init__(self, lam, h3o_unwrapped_pdb, lam_analysis_dir, sample_dt_ps):
 		self.lam = lam
 		self.h3o_unwrapped_pdb = h3o_unwrapped_pdb
 		self.lam_analysis_dir = lam_analysis_dir
+		self.sample_dt_ps = sample_dt_ps
 
 	def load_h3o_positions(self):
 		h3o_o_indices = get_h3o_oxygen_indices_from_first_model(
@@ -1787,7 +1821,7 @@ class Cond_H3OMSDAnalysis:
 	def calculate_msd(self):
 		positions, volumes, num_h3o = self.load_h3o_positions()
 
-		sample_dt_ps = cond_time_between_nc_frames_ps * cond_frame_stride
+		sample_dt_ps = self.sample_dt_ps
 
 		# H3O positions are already unwrapped by cpptraj.
 		msd_df = calculate_time_origin_msd(positions, sample_dt_ps)
@@ -1882,17 +1916,18 @@ class Cond_ConductivityAnalysis:
 		return df
 
 class Cond_ResidenceAnalysis:
-	def __init__(self, lam, sampled_pdb, lam_analysis_dir):
+	def __init__(self, lam, sampled_pdb, lam_analysis_dir, sample_dt_ps):
 		self.lam = lam
 		self.sampled_pdb = sampled_pdb
 		self.lam_analysis_dir = lam_analysis_dir
+		self.sample_dt_ps = sample_dt_ps
 
 	def calculate_residence(self):
 		h3o_o_indices = get_h3o_oxygen_indices_from_first_model(self.sampled_pdb)
 		s_indices = get_s_atom_indices_from_first_model(self.sampled_pdb)
 
 		rows = []
-		sample_dt_ps = cond_time_between_nc_frames_ps * cond_frame_stride
+		sample_dt_ps = self.sample_dt_ps
 
 		for frame_i, (positions, box) in enumerate(
 			iter_pdb_frames(self.sampled_pdb)
@@ -1961,10 +1996,12 @@ class Cond_ResidenceAnalysis:
 		return df, summary
 
 class Cond_SummaryWriter:
-	def __init__(self, lam, system_tag, lam_analysis_dir):
+	def __init__(self, lam, system_tag, lam_analysis_dir, nc_frame_dt_ps, sample_dt_ps):
 		self.lam = lam
 		self.system_tag = system_tag
 		self.lam_analysis_dir = lam_analysis_dir
+		self.nc_frame_dt_ps = nc_frame_dt_ps
+		self.sample_dt_ps = sample_dt_ps
 
 	def write_summary(
 		self,
@@ -1988,7 +2025,9 @@ class Cond_SummaryWriter:
 			"cond_frame_start": cond_frame_start,
 			"cond_frame_stop": cond_frame_stop,
 			"cond_frame_stride": cond_frame_stride,
-			"cond_time_between_nc_frames_ps": cond_time_between_nc_frames_ps,
+			"cond_pr_ns": cond_pr_ns,
+			"cond_nc_frame_interval_ps": self.nc_frame_dt_ps,
+			"cond_sample_interval_ps": self.sample_dt_ps,
 			"msd_fit_start_ps": msd_fit_start_ps,
 			"msd_fit_end_ps": msd_fit_end_ps,
 			"cond_temperature_K": cond_temperature_K,
@@ -2144,9 +2183,11 @@ def run_cond_analysis_workflow():
 
 		prmtop_file = find_prmtop(lam_md_dir)
 		validate_cond_inputs(lam, prmtop_file)
-
+		nc_frame_dt_ps = get_cond_nc_frame_interval_ps(lam_md_dir)
+		sample_dt_ps = nc_frame_dt_ps * cond_frame_stride
+		
 		log_general_settings()
-		log_cond_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir)
+		log_cond_settings(lam, lam_tag, prmtop_file, lam_md_dir, lam_analysis_dir, nc_frame_dt_ps, sample_dt_ps)
 
 		traj_prep = Cond_TrajectoryPreparation(lam, prmtop_file)
 		last_pdb = traj_prep.create_last_pdb()
@@ -2157,7 +2198,7 @@ def run_cond_analysis_workflow():
 		# H3O-only unwrapped trajectory for MSD / D / conductivity
 		h3o_unwrapped_pdb = traj_prep.create_h3o_unwrapped_pdb()
 
-		msd_analysis = Cond_H3OMSDAnalysis(lam, h3o_unwrapped_pdb, lam_analysis_dir)
+		msd_analysis = Cond_H3OMSDAnalysis(lam, h3o_unwrapped_pdb, lam_analysis_dir, sample_dt_ps)
 		msd_df, diffusion_df, msdc_df, eta_df, num_h3o, volume_mean_A3 = msd_analysis.calculate_msd()
 
 		conductivity_analysis = Cond_ConductivityAnalysis(lam, lam_analysis_dir)
@@ -2167,10 +2208,10 @@ def run_cond_analysis_workflow():
 			volume_mean_A3
 		)
 
-		residence_analysis = Cond_ResidenceAnalysis(lam, sampled_pdb, lam_analysis_dir)
+		residence_analysis = Cond_ResidenceAnalysis(lam, sampled_pdb, lam_analysis_dir, sample_dt_ps)
 		residence_df, residence_summary = residence_analysis.calculate_residence()
 
-		summary_writer = Cond_SummaryWriter(lam, lam_tag, lam_analysis_dir)
+		summary_writer = Cond_SummaryWriter(lam, lam_tag, lam_analysis_dir, nc_frame_dt_ps, sample_dt_ps)
 		summary = summary_writer.write_summary(
 			msd_df,
 			diffusion_df,

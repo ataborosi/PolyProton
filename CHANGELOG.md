@@ -2,12 +2,36 @@
 
 Changes to released versions of PolyProton are documented here.
 
-## [Unreleased]
+## [1.2.0] - 2026-11-16
+
+### Added
+- Segmented GPU NPT execution during dry equilibration, with user defined
+`gpu_npt_segment_ps` settings while preserving each NPT stage's total duration.
+- To retain intermediate segment files when needed for debugging use the 
+`gpu_npt_keep_segments` setting, otherwise intermediate `.in`, `.out`, `.nc`, and
+`.ncrst` files are removed after successful merging.
+- User defined conductivity production length through `cond_pr_ns`, which sets
+Amber `nstlim` automatically from the input timestep.
+- Conductivity analysis settings for expected production length `cond_pr_ns`
+and MSD fitting bounds `msd_fit_start_ns`, `msd_fit_end_ns`.
+
+### Changed
+- Dry NPT stages used `pmemd.cuda` in GPU mode, chaining short segments and
+merging their NetCDF trajectories into the original output name.
+- Conductivity trajectory selection can continue to the last available frame.
+- Conductivity analysis reads `dt` and `ntwx` from each run's `cond_pr-nvt.in`
+to determine the trajectory and sampled-frame time intervals for MSD and
+hydronium–sulfonate contact analysis.
+
+### Notes
+- GPU NPT segmentation does not guarantee stable high pressure equilibration;
+select a suitable segment length and inspect the Amber outputs.
+- The selected MSD fitting interval should be checked against the available
+trajectory and the linear regime before interpreting diffusion coefficients.
 
 ## [1.1.0] - 2026-10-14
 
 ### Added
-
 - PSMILES based polymer monomer unit definition using RDKit
 - Support for explicit polymerization endpoint using `[*:1]` and `[*:2]`.
 - Automatic detection of sulfonic acid groups from the polymer PSMILES.
@@ -39,7 +63,6 @@ an interrupted intermediate MD step is not yet supported.
 Initial public release.
 
 ### Added
-
 - Automated SPI monomer construction and conformer generation.
 - MACE-OFF conformer optimization and energy-based selection.
 - ORCA and Multiwfn calculations for RESP charge preparation.
@@ -54,7 +77,6 @@ Initial public release.
 - Documentation and BSD 3-Clause licensing.
 
 ### Known limitations
-
 - Molecular construction is specialized for sulfonated polyimides.
 - Automatic restart/resume support is not provided.
 - New calculations should use clean working directories.
