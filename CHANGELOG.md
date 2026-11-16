@@ -2,7 +2,7 @@
 
 Changes to released versions of PolyProton are documented here.
 
-## [Unreleased]
+## [1.2.0] - 2026-11-16
 
 ### Added
 - Segmented GPU NPT execution during dry equilibration, with user defined
